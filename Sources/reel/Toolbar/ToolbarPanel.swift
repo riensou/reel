@@ -8,6 +8,7 @@ import SwiftUI
 final class ToolbarPanel: NSPanel {
     var onCancel: (() -> Void)?
     private let mic = MicMonitor()
+    private let systemAudio = SystemAudioMonitor()
 
     init(state: AppState, onCapture: @escaping () -> Void, onCancel: @escaping () -> Void) {
         self.onCancel = onCancel
@@ -18,7 +19,7 @@ final class ToolbarPanel: NSPanel {
         hasShadow = true
         isMovableByWindowBackground = true
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        let host = NSHostingView(rootView: ToolbarView(state: state, mic: mic, onCapture: onCapture, onCancel: onCancel))
+        let host = NSHostingView(rootView: ToolbarView(state: state, mic: mic, systemAudio: systemAudio, onCapture: onCapture, onCancel: onCancel))
         host.sizingOptions = [.intrinsicContentSize]
         contentView = host
     }
@@ -27,6 +28,7 @@ final class ToolbarPanel: NSPanel {
 
     override func orderOut(_ sender: Any?) {
         mic.stop()
+        systemAudio.stop()
         super.orderOut(sender)
     }
 
@@ -47,16 +49,22 @@ final class ToolbarPanel: NSPanel {
 private struct ToolbarView: View {
     @ObservedObject var state: AppState
     let mic: MicMonitor
+    let systemAudio: SystemAudioMonitor
     let onCapture: () -> Void
     let onCancel: () -> Void
 
-    /// Listen only when a recording would actually use the mic.
+    /// Meter only what a recording would actually capture.
     private var wantsMicLevel: Bool {
         state.prefs.action == .record && state.prefs.options.microphone
     }
 
-    private func syncMic() {
+    private var wantsSystemLevel: Bool {
+        state.prefs.action == .record && state.prefs.options.systemAudio
+    }
+
+    private func syncMeters() {
         if wantsMicLevel { mic.start(deviceID: state.prefs.options.microphoneID) } else { mic.stop() }
+        if wantsSystemLevel { systemAudio.start() } else { systemAudio.stop() }
     }
 
     var body: some View {
@@ -76,14 +84,15 @@ private struct ToolbarView: View {
                 }
             }
             divider
-            IconToggle(
-                symbol: state.prefs.options.systemAudio ? "speaker.wave.2.fill" : "speaker.slash",
-                help: "Record system audio", isOn: state.prefs.options.systemAudio
+            LevelToggle(
+                meter: systemAudio.meter, onSymbol: "speaker.wave.2.fill", offSymbol: "speaker.slash",
+                help: "Record system audio", isOn: state.prefs.options.systemAudio, live: wantsSystemLevel
             ) { state.prefs.options.systemAudio.toggle() }
                 .disabled(state.prefs.action == .screenshot)
-            MicToggle(mic: mic, isOn: state.prefs.options.microphone, live: wantsMicLevel) {
-                state.prefs.options.microphone.toggle()
-            }
+            LevelToggle(
+                meter: mic.meter, onSymbol: "mic.fill", offSymbol: "mic.slash",
+                help: "Record microphone", isOn: state.prefs.options.microphone, live: wantsMicLevel
+            ) { state.prefs.options.microphone.toggle() }
                 .disabled(state.prefs.action == .screenshot)
             IconToggle(
                 symbol: state.prefs.options.cursor.show ? "cursorarrow" : "cursorarrow.slash",
@@ -106,9 +115,10 @@ private struct ToolbarView: View {
         .padding(.vertical, 6)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.white.opacity(0.12)))
-        .onAppear(perform: syncMic)
-        .onChange(of: wantsMicLevel) { syncMic() }
-        .onChange(of: state.prefs.options.microphoneID) { syncMic() }
+        .onAppear(perform: syncMeters)
+        .onChange(of: wantsMicLevel) { syncMeters() }
+        .onChange(of: wantsSystemLevel) { syncMeters() }
+        .onChange(of: state.prefs.options.microphoneID) { syncMeters() }
     }
 
     private var divider: some View {
@@ -197,10 +207,13 @@ private struct IconToggle: View {
     }
 }
 
-/// Mic button whose glyph fills with green from the bottom as input gets louder.
-/// Its own view so 60 level updates a second don't re-render the whole toolbar.
-private struct MicToggle: View {
-    @ObservedObject var mic: MicMonitor
+/// Toggle whose glyph fills with green from the bottom as the audio gets louder.
+/// Its own view so ~60 level updates a second don't re-render the whole toolbar.
+private struct LevelToggle: View {
+    @ObservedObject var meter: LevelMeter
+    let onSymbol: String
+    let offSymbol: String
+    let help: String
     let isOn: Bool
     let live: Bool
     let action: () -> Void
@@ -208,18 +221,18 @@ private struct MicToggle: View {
     var body: some View {
         Button(action: action) {
             ZStack {
-                Image(systemName: isOn ? "mic.fill" : "mic.slash")
+                Image(systemName: isOn ? onSymbol : offSymbol)
                 if isOn, live {
-                    Image(systemName: "mic.fill")
+                    Image(systemName: onSymbol)
                         .foregroundStyle(.green)
                         .mask(alignment: .bottom) {
                             GeometryReader { geo in
                                 Rectangle()
-                                    .frame(height: geo.size.height * CGFloat(mic.level))
+                                    .frame(height: geo.size.height * CGFloat(meter.level))
                                     .frame(maxHeight: .infinity, alignment: .bottom)
                             }
                         }
-                        .animation(.linear(duration: 0.08), value: mic.level)
+                        .animation(.linear(duration: 0.08), value: meter.level)
                 }
             }
             .font(.system(size: 15))
@@ -228,7 +241,7 @@ private struct MicToggle: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help("Record microphone")
+        .help(help)
     }
 }
 
