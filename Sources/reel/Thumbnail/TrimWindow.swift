@@ -48,15 +48,12 @@ enum TrimWindow {
             while player.currentItem?.status != .readyToPlay {
                 try? await Task.sleep(for: .milliseconds(50))
             }
-            view.beginTrimming { result in
-                MainActor.assumeIsolated {
-                    guard result == .okButton, let item = player.currentItem else { return done(nil) }
-                    // Invalid times mean that handle wasn't moved.
-                    let start = item.reversePlaybackEndTime.isValid ? item.reversePlaybackEndTime : .zero
-                    let end = item.forwardPlaybackEndTime.isValid ? item.forwardPlaybackEndTime : item.duration
-                    done(CMTimeRange(start: start, end: end))
-                }
-            }
+            let result = await view.beginTrimming()
+            guard result == .okButton, let item = player.currentItem else { return done(nil) }
+            // Invalid times mean that handle wasn't moved.
+            let start = item.reversePlaybackEndTime.isValid ? item.reversePlaybackEndTime : .zero
+            let end = item.forwardPlaybackEndTime.isValid ? item.forwardPlaybackEndTime : item.duration
+            done(CMTimeRange(start: start, end: end))
         }
     }
 }
