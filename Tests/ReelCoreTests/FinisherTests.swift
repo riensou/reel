@@ -49,7 +49,7 @@ import Testing
         let a = dir.appending(path: "segment-0.mp4")
         try await makeClip(a, seconds: 0.5, audioTracks: 0)
         var job = Finisher.Job(segments: [a], output: dir.appending(path: "fx.mp4"))
-        job.effect = { image, _ in image.transformed(by: CGAffineTransform(scaleX: 2, y: 2)) }
+        job.effect = .init(render: { image, _ in image.transformed(by: CGAffineTransform(scaleX: 2, y: 2)) })
         try await Finisher.run(job)
         let tracks = try await AVURLAsset(url: job.output).loadTracks(withMediaType: .video)
         #expect(try await tracks.first?.load(.naturalSize) == CGSize(width: 320, height: 240))

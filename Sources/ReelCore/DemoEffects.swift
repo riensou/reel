@@ -1,5 +1,6 @@
 import CoreGraphics
 import CoreImage
+import CoreMedia
 import Foundation
 
 /// Builds the per-frame effect for auto-zoom and the smoothed cursor from an
@@ -45,7 +46,25 @@ public enum DemoEffects {
         let ripple = Box(rippleImage(diameter: 64 * scale))
         let samples = log.samples
 
-        return { image, time in
+        // What the effect looks like at t — used to skip frames that would be
+        // identical to the previous one (encoding is the slow part).
+        let signature: @Sendable (Double) -> [Double] = { t in
+            func q(_ v: CGFloat) -> Double { (Double(v) * 4).rounded() / 4 }
+            var sig: [Double] = []
+            if smoothCursor, let p = cursorTrack.position(at: t) {
+                let nearest = clickTimes.lazy.map { abs($0 - t) }.min() ?? .infinity
+                sig += [q(p.x), q(p.y), Double(cursorID(at: t, in: samples) ?? -1), nearest < 0.15 ? t : -1]
+            }
+            if let camera {
+                let r = camera.crop(at: t)
+                sig += [q(r.minX), q(r.minY), q(r.width)]
+            }
+            // Ripples animate every frame while active.
+            if clickTimes.contains(where: { t >= $0 && t < $0 + rippleDuration }) { sig.append(t) }
+            return sig
+        }
+
+        let render: @Sendable (CIImage, CMTime) -> CIImage = { image, time in
             let t = time.seconds
             var out = image
             // Top-left frame coordinates → Core Image's bottom-left.
@@ -95,6 +114,7 @@ public enum DemoEffects {
             }
             return out
         }
+        return Finisher.FrameEffect(render: render, signature: signature)
     }
 
     private static func cursorID(at t: Double, in samples: [EventLog.Sample]) -> Int? {

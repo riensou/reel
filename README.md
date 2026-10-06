@@ -69,7 +69,7 @@ All of these are off by default. Turn them on under **Settings → Demo Polish**
 - **Auto-zoom:** after recording, zooms in where you clicked and follows the cursor.
 - **Smooth cursor:** after recording, redraws the cursor along a smoothed path, with a small ripple on each click.
 
-Auto-zoom and smooth cursor re-encode the video when you stop recording. The thumbnail shows progress while that runs.
+Auto-zoom and smooth cursor re-encode the video when you stop recording. reel only re-encodes frames where something changed, so a typical recording takes about a quarter of its length to process. The thumbnail shows progress while that runs.
 
 <p align="center">
   <img src="docs/settings-demo.png" width="560" alt="Settings window">
