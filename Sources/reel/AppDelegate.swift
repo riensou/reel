@@ -8,7 +8,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let state = AppState()
     private let recorder = Recorder()
     private let thumbnails = ThumbnailController()
-    private let clicks = ClickHighlighter()
     private var toolbar: ToolbarPanel?
     private var statusItem: NSStatusItem!
     private var hotKey: HotKey?
@@ -122,12 +121,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func startRecording(_ target: CaptureTarget) async {
         let options = state.prefs.options
-        if options.cursor.highlightClicks { clicks.start() }
         let temp = SaveLocation.temporaryURL(for: .recording)
         do {
-            try await recorder.start(target, options: options, to: temp, keepWindows: clicks.windowIDs)
+            try await recorder.start(target, options: options, to: temp)
         } catch {
-            clicks.stop()
             showError(error)
             return
         }
@@ -153,7 +150,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func recordingEnded() {
-        clicks.stop()
         tick?.invalidate()
         tick = nil
         state.isRecording = false
@@ -214,7 +210,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         addToggle(to: menu, "Record System Audio", \.options.systemAudio)
         addToggle(to: menu, "Record Microphone", \.options.microphone)
         addToggle(to: menu, "Show Cursor", \.options.cursor.show)
-        addToggle(to: menu, "Highlight Clicks", \.options.cursor.highlightClicks)
         addToggle(to: menu, "Floating Thumbnail", \.showThumbnail)
 
         menu.addItem(.separator())

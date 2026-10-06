@@ -18,7 +18,6 @@ public enum CaptureAction: String, CaseIterable, Codable, Sendable {
 
 public struct CursorOptions: Codable, Equatable, Sendable {
     public var show = true
-    public var highlightClicks = false
 
     public init() {}
 }

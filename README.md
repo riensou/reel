@@ -15,7 +15,7 @@ The first time it runs, macOS asks for **Screen Recording** permission, plus **M
 
 - **⌘⇧6** opens the capture toolbar. While a recording is running, it stops the recording.
   To use ⌘⇧5 instead: turn off the system shortcut in System Settings → Keyboard → Keyboard Shortcuts → Screenshots, then change the key code in `AppDelegate.swift`.
-- Toolbar: **Screen / Window / Region** · **Screenshot / Record** · system audio · mic · show cursor · highlight clicks · Options (mic device, fps, save folder, thumbnail) · **Capture**.
+- Toolbar: **Screen / Window / Region** · **Screenshot / Record** · system audio · mic · show cursor · Options (mic device, fps, save folder, thumbnail) · **Capture**.
 - While recording, the menu bar shows ● and a timer. Click it to stop.
 - Thumbnail: click to open the file, drag it into any app, swipe it away, or right-click for Show in Finder / Copy / Delete. If you leave it, the file is saved after 5 seconds.
 - Save folder: by default, the same place macOS screenshots go (`defaults read com.apple.screencapture location`). You can change it under Options.
@@ -32,7 +32,7 @@ Recordings are HEVC `.mov` files, with system audio and mic on separate audio tr
 ## Layout
 
 - `Sources/ReelCore`: capture engine with no UI (`Recorder`, `Screenshotter`, `SaveLocation`, `Preferences`)
-- `Sources/reel`: the menu-bar app (toolbar, region and window picker, click highlighter, thumbnail)
+- `Sources/reel`: the menu-bar app (toolbar, region and window picker, thumbnail)
 
 ## Roadmap
 

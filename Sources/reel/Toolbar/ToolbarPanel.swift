@@ -74,11 +74,6 @@ private struct ToolbarView: View {
                 symbol: state.prefs.options.cursor.show ? "cursorarrow" : "cursorarrow.slash",
                 help: "Show mouse cursor", isOn: state.prefs.options.cursor.show
             ) { state.prefs.options.cursor.show.toggle() }
-            IconToggle(
-                symbol: "cursorarrow.click.2",
-                help: "Highlight clicks (recordings)", isOn: state.prefs.options.cursor.highlightClicks
-            ) { state.prefs.options.cursor.highlightClicks.toggle() }
-                .disabled(state.prefs.action == .screenshot)
             divider
             OptionsMenu(state: state)
             Button(action: onCapture) {
