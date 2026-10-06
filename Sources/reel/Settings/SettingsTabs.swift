@@ -392,7 +392,7 @@ struct AboutTab: View {
             VStack(spacing: 2) {
                 Text("reel")
                     .font(.system(size: 22, weight: .bold, design: .rounded))
-                Text("An open-source ⌘⇧5 for macOS")
+                Text("The screen recorder macOS should have shipped with.")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                 Text("v\(AppInfo.version)")
