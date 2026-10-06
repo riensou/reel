@@ -272,6 +272,14 @@ final class SelfTest {
               "toolbar: capture uses the moved selection and closes", "\(String(describing: size))")
         check(app.state.session.lastRegions[screen.displayID.stableUUID] == moved, "toolbar: moved selection is remembered")
 
+        // No previous selection: nothing preselected; you draw one.
+        app.state.session.lastRegions = [:]
+        app.showToolbar()
+        await wait(0.5)
+        check(app.regionOverlay != nil && app.regionOverlay?.currentTarget == nil, "toolbar: no previous selection → draw your own")
+        app.closeToolbar()
+        app.state.session.lastRegions = [screen.displayID.stableUUID: moved]
+
         // Esc on the overlay closes everything.
         app.showToolbar()
         await wait(0.5)

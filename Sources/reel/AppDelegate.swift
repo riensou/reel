@@ -82,6 +82,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 NSApp.terminate(nil)
             }
         }
+        if args.contains("--real-drag-probe") {
+            // Opens the toolbar in Region mode with a known selection, waits for
+            // real mouse input (posted by a test script), then reports the result.
+            let saved = state.session
+            state.session.mode = .region
+            state.session.lastRegions = [CGMainDisplayID().stableUUID: CGRect(x: 300, y: 200, width: 500, height: 300)]
+            showToolbar()
+            Task {
+                try? await Task.sleep(for: .seconds(7))
+                print("selection after drag:", String(describing: regionOverlay?.currentTarget))
+                closeToolbar()
+                state.session = saved
+                exit(0)
+            }
+        }
         if let i = args.firstIndex(of: "--soak"), let mins = Double(args[safe: i + 1] ?? ""), let out = args[safe: i + 2] {
             Task {
                 await SelfTest(app: self, outDir: URL(fileURLWithPath: out)).soak(minutes: mins)

@@ -61,11 +61,8 @@ final class SelectionOverlay {
     /// Capture/Record button uses it. Enter or double-click captures; Esc cancels.
     func attach(remembered: [String: CGRect], onConfirm: @escaping () -> Void, onCancel: @escaping () -> Void) {
         let home = NSScreen.underMouse ?? NSScreen.screens[0]
-        var regions = remembered
-        if !NSScreen.screens.contains(where: { regions[$0.displayID.stableUUID] != nil }) {
-            let f = home.frame
-            regions[home.displayID.stableUUID] = CGRect(x: f.width * 0.25, y: f.height * 0.25, width: f.width * 0.5, height: f.height * 0.5).integral
-        }
+        let regions = remembered
+        // No previous selection: start empty and let the user draw one.
         // One selection at a time: prefer the screen under the mouse.
         let selectedScreen = regions[home.displayID.stableUUID] != nil ? home
             : NSScreen.screens.first { regions[$0.displayID.stableUUID] != nil }
@@ -118,6 +115,10 @@ final class OverlayPanel: NSPanel {
         backgroundColor = .clear
         hasShadow = false
         acceptsMouseMovedEvents = true
+        // Explicitly opaque to the mouse: otherwise macOS sends clicks on the
+        // see-through selection straight to the window underneath, and you
+        // can't grab the selection to move it.
+        ignoresMouseEvents = false
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
     }
 
@@ -186,7 +187,9 @@ final class OverlayView: NSView {
             NSColor.black.withAlphaComponent(0.3).setFill()
             bounds.fill()
             guard let r = rect else { return }
-            NSColor.clear.setFill()
+            // Nearly (not fully) transparent: fully clear pixels let clicks fall
+            // through to the window below.
+            NSColor.black.withAlphaComponent(0.01).setFill()
             r.fill(using: .copy)
             NSColor.white.withAlphaComponent(0.9).setStroke()
             let path = NSBezierPath(rect: r.insetBy(dx: -0.5, dy: -0.5))
@@ -234,13 +237,20 @@ final class OverlayView: NSView {
         return Handle.allCases.first { hypot($0.point(in: r).x - p.x, $0.point(in: r).y - p.y) <= 10 }
     }
 
+    /// Inside the selection or on its edge (a few points either side of the
+    /// line) grabs it to move; only the dots resize.
+    private func grabsSelection(_ p: NSPoint) -> Bool {
+        guard let r = rect else { return false }
+        return r.insetBy(dx: -6, dy: -6).contains(p)
+    }
+
     /// The cursor for a point: open hand inside the selection (drag to move),
     /// resize arrows on handles, crosshair elsewhere (drag for a new region).
     private func cursor(at p: NSPoint) -> NSCursor {
         guard kind == .region else { return .pointingHand }
         if case .move = drag { return .closedHand }
         if let h = handle(at: p) { return h.cursor }
-        if rect?.contains(p) == true { return .openHand }
+        if grabsSelection(p) { return .openHand }
         return .crosshair
     }
 
@@ -266,8 +276,18 @@ final class OverlayView: NSView {
         }
     }
 
+    private func trace(_ what: String, _ e: NSEvent, _ p: NSPoint) {
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["REEL_TRACE"] != nil {
+            print(what, "win#", e.windowNumber, "mine#", window?.windowNumber ?? -1, "loc", e.locationInWindow, "view", p,
+                  "winFrame", window?.frame ?? .zero, "mouse", NSEvent.mouseLocation)
+        }
+        #endif
+    }
+
     override func mouseDown(with event: NSEvent) {
         let p = convert(event.locationInWindow, from: nil)
+        trace("down", event, p)
         switch kind {
         case .window:
             if let h = hover { onFinish(.window(h.id)) }
@@ -275,7 +295,7 @@ final class OverlayView: NSView {
             onEdit?()
             if let h = handle(at: p), let r = rect {
                 drag = .resize(h, r)
-            } else if let r = rect, r.contains(p) {
+            } else if let r = rect, grabsSelection(p) {
                 drag = .move(p, r)
                 NSCursor.closedHand.set()
             } else {
@@ -288,6 +308,7 @@ final class OverlayView: NSView {
     override func mouseDragged(with event: NSEvent) {
         guard kind == .region, let drag else { return }
         var p = convert(event.locationInWindow, from: nil)
+        trace("drag", event, p)
         p.x = min(max(p.x, 0), bounds.maxX)
         p.y = min(max(p.y, 0), bounds.maxY)
         switch drag {
