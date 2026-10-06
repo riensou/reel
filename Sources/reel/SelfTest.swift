@@ -27,7 +27,9 @@ final class SelfTest {
         config.thumbnail = false
         app.state.overrideConfig(config)
 
-        if only == "pause" {
+        if only == "trim" {
+            await trimFromThumbnail()
+        } else if only == "pause" {
             for _ in 0..<5 { await pauseResume() }
         } else {
             await regionPicker()
@@ -40,6 +42,7 @@ final class SelfTest {
             await systemStop()
             await systemStopUnattended()
             await trimWindowCancel()
+            await trimFromThumbnail()
         }
 
         app.state.reloadConfig()
@@ -362,6 +365,36 @@ final class SelfTest {
         guard let url else { return }
         let d = await duration(url)
         check(d > 1.5 && d < 2.8, "stopped by macOS, no user action: still saved", String(format: "video %.2fs", d))
+    }
+
+    /// The real flow: thumbnail → Trim… → take longer than the auto-save
+    /// countdown → Trim. The file must actually get shorter.
+    private func trimFromThumbnail() async {
+        guard let source = await record(testRegion, seconds: 4) else { return }
+        let scratch = SaveLocation.workDirectory()
+        let temp = scratch.appending(path: "trim-test.mp4")
+        try? FileManager.default.copyItem(at: source, to: temp)
+        let dest = outDir.appending(path: "trimmed", directoryHint: .isDirectory)
+        await app.thumbnails.present(tempURL: temp, destination: dest, seconds: 2)
+        guard let panel = NSApp.windows.compactMap({ $0 as? ThumbnailPanel }).last,
+              let view = panel.contentView as? ThumbnailView else {
+            check(false, "trim from thumbnail", "no thumbnail")
+            return
+        }
+        view.trimForTesting()
+        await wait(7) // longer than the thumbnail's 2s countdown
+        check(panel.isVisible, "trim: thumbnail stays up while trimming")
+        guard let complete = TrimWindow.completeForTesting else {
+            check(false, "trim: trim window opened")
+            return
+        }
+        complete(CMTimeRange(start: CMTime(seconds: 1, preferredTimescale: 600), end: CMTime(seconds: 3, preferredTimescale: 600)))
+        await wait(3)
+        let saved = ((try? FileManager.default.contentsOfDirectory(at: dest, includingPropertiesForKeys: nil)) ?? []).first
+        var d = 0.0
+        if let saved { d = await duration(saved) }
+        check(abs(d - 2) < 0.15, "trim: file is actually trimmed", String(format: "%.2fs (was ~4s)", d))
+        try? FileManager.default.removeItem(at: scratch)
     }
 
     private func trimWindowCancel() async {

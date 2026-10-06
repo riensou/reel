@@ -172,6 +172,17 @@ final class ThumbnailPanel: NSPanel {
     }
 
     /// Runs a long export (GIF, trim…) while keeping the thumbnail up.
+    /// Keeps the thumbnail up (no auto-save countdown) while another window,
+    /// like Trim, is working with this capture.
+    func hold() {
+        busy = true
+        pauseTimer()
+    }
+
+    func release() {
+        busy = false
+    }
+
     func runBusy(_ label: String, _ work: @escaping () async throws -> Void) {
         busy = true
         pauseTimer()
@@ -204,7 +215,7 @@ final class ThumbnailPanel: NSPanel {
     }
 }
 
-private final class ThumbnailView: NSView, NSDraggingSource {
+final class ThumbnailView: NSView, NSDraggingSource {
     weak var panel: ThumbnailPanel?
     private let image: NSImage
     private var mouseDownAt: NSPoint?
@@ -322,14 +333,33 @@ private final class ThumbnailView: NSView, NSDraggingSource {
         panel?.commit()
     }
 
+    #if DEBUG
+    func trimForTesting() { trim() }
+    #endif
+
     @objc private func trim() {
         guard let panel, let url = panel.save() else { return }
-        panel.pauseTimer()
-        TrimWindow.show(url) { [weak panel] range in
-            guard let range else { panel?.commit(); return }
-            panel?.runBusy("Trim") {
-                try await VideoExport.trim(url, to: range)
-                Toast.info("Trimmed", icon: "scissors", action: .reveal(url))
+        // Hold the thumbnail open while trimming; the auto-save countdown used
+        // to close it (and drop the result) if trimming took more than 5s.
+        panel.hold()
+        TrimWindow.show(url) { range in
+            Task { @MainActor in
+                panel.release()
+                guard let range else {
+                    panel.commit()
+                    return
+                }
+                let duration = (try? await AVURLAsset(url: url).load(.duration)) ?? range.end
+                let unchanged = range.start.seconds < 0.05 && abs(range.end.seconds - duration.seconds) < 0.05
+                guard !unchanged else {
+                    Toast.info("Nothing trimmed", icon: "scissors")
+                    panel.commit()
+                    return
+                }
+                panel.runBusy("Trim") {
+                    try await VideoExport.trim(url, to: range)
+                    Toast.info(String(format: "Trimmed to %.1fs", range.duration.seconds), icon: "scissors", action: .reveal(url))
+                }
             }
         }
     }

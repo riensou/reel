@@ -6,6 +6,10 @@ import AppKit
 @MainActor
 enum TrimWindow {
     private static var open: [NSWindow] = []
+    #if DEBUG
+    /// Finishes the open Trim window as if the user clicked Trim/Cancel.
+    static var completeForTesting: ((CMTimeRange?) -> Void)?
+    #endif
 
     static func show(_ url: URL, completion: @escaping (CMTimeRange?) -> Void) {
         let player = AVPlayer(url: url)
@@ -41,6 +45,9 @@ enum TrimWindow {
                 open.removeAll { $0 === window }
                 completion(range)
             }
+            #if DEBUG
+            completeForTesting = { done($0) }
+            #endif
             NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: window, queue: .main) { _ in
                 MainActor.assumeIsolated { done(nil) }
             }
