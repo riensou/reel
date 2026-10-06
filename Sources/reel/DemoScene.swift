@@ -1,3 +1,4 @@
+#if DEBUG
 import AppKit
 import ReelCore
 import SwiftUI
@@ -264,3 +265,4 @@ private struct SampleWindow: View {
         .shadow(color: .black.opacity(0.25), radius: 24, y: 10)
     }
 }
+#endif

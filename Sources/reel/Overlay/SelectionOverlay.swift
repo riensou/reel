@@ -49,6 +49,10 @@ final class SelectionOverlay {
         }
     }
 
+    #if DEBUG
+    var viewsForTesting: [OverlayView] { panels.compactMap { $0.contentView as? OverlayView } }
+    #endif
+
     /// Presses the confirm pill programmatically (demo scene).
     func confirmForDemo() {
         panels.compactMap { $0.contentView as? OverlayView }.forEach { $0.confirmIfSelected() }

@@ -7,12 +7,17 @@ import ServiceManagement
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let state = AppState()
     let thumbnails = ThumbnailController()
-    private lazy var webcam = WebcamBubble(state: state)
+    lazy var webcam = WebcamBubble(state: state)
     private lazy var settings = SettingsWindowController(state: state, actions: .init(
         openConfig: { [weak self] in self?.openConfigFile() },
         revealConfig: { [weak self] in self?.revealConfigFile() }
     ))
     private(set) var toolbar: ToolbarPanel?
+    private lazy var welcome = WelcomeWindowController(
+        state: state,
+        onDone: { [weak self] in self?.showToolbar() },
+        openSettings: { [weak self] in self?.openSettings() }
+    )
     private var recording: RecordingSession?
     private var statusItem: NSStatusItem!
     private var hotKey: HotKey?
@@ -46,10 +51,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }.store(in: &subscriptions)
 
         syncLaunchAtLogin()
-        if !CGPreflightScreenCaptureAccess() {
-            CGRequestScreenCaptureAccess()
+        Task.detached(priority: .background) { SaveLocation.cleanStaleWork() }
+        if state.config.checkForUpdates { state.updates.start() }
+        // First launch, or permission went missing: explain before macOS asks.
+        if !state.session.onboarded || !CGPreflightScreenCaptureAccess() {
+            welcome.show()
         }
 
+        #if DEBUG
         // Dev conveniences: open a surface on launch (`--show-settings demo`, `--show-toolbar`).
         let args = CommandLine.arguments
         if let i = args.firstIndex(of: "--show-settings") {
@@ -70,6 +79,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 NSApp.terminate(nil)
             }
         }
+        if let i = args.firstIndex(of: "--soak"), let mins = Double(args[safe: i + 1] ?? ""), let out = args[safe: i + 2] {
+            Task {
+                await SelfTest(app: self, outDir: URL(fileURLWithPath: out)).soak(minutes: mins)
+                exit(0)
+            }
+        }
+        if let i = args.firstIndex(of: "--self-test"), let out = args[safe: i + 1] {
+            Task {
+                let ok = await SelfTest(app: self, outDir: URL(fileURLWithPath: out)).run(only: args[safe: i + 2])
+                exit(ok ? 0 : 1)
+            }
+        }
         if let i = args.firstIndex(of: "--dev-record"), let secs = Double(args[safe: i + 1] ?? "") {
             // Records the main display through the full pipeline, then stops.
             Task {
@@ -78,6 +99,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 recording?.stop()
             }
         }
+        #endif
     }
 
     // MARK: Config
@@ -85,6 +107,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func configChanged(_ config: Config) {
         if config.hotkey != registeredHotKey { registerHotKey() }
         if config.launchAtLogin != lastConfig?.launchAtLogin { syncLaunchAtLogin() }
+        if config.checkForUpdates != lastConfig?.checkForUpdates {
+            config.checkForUpdates ? state.updates.start() : state.updates.stop()
+        }
         if let last = lastConfig, last.webcamSize != config.webcamSize || last.webcamShape != config.webcamShape {
             webcam.refresh()
         }
@@ -306,6 +331,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func buildMenu() -> NSMenu {
         let menu = NSMenu()
         menu.delegate = self
+        if let update = state.updates.available, let v = Version(update.tag_name) {
+            let item = menu.addItem(withTitle: "Update Available (\(v))…", action: #selector(openUpdate), keyEquivalent: "")
+            item.target = self
+            item.image = NSImage(systemSymbolName: "arrow.down.circle.fill", accessibilityDescription: nil)
+            menu.addItem(.separator())
+        }
         let toolbarItem = menu.addItem(withTitle: "Capture Toolbar", action: #selector(showToolbar), keyEquivalent: "")
         toolbarItem.target = self
         toolbarItem.toolTip = state.config.hotkey.symbols
@@ -336,6 +367,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit reel", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         return menu
+    }
+
+    @objc private func openUpdate() {
+        if let url = state.updates.available?.html_url { NSWorkspace.shared.open(url) }
     }
 
     @objc private func openSaveFolder() {

@@ -16,12 +16,18 @@ final class AppState: ObservableObject {
     @Published var isPaused = false
 
     let configFile = ConfigFile()
+    let updates = UpdateChecker()
 
     init() {
         session = SessionState.load()
         try? configFile.ensureExists()
         reloadConfig()
     }
+
+    #if DEBUG
+    /// In-memory config for tests; doesn't touch the file.
+    func overrideConfig(_ config: Config) { self.config = config }
+    #endif
 
     func reloadConfig() {
         let (config, warnings) = configFile.load()

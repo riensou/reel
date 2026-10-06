@@ -17,6 +17,7 @@ public struct Config: Equatable, Sendable {
     public var thumbnailDuration: Double = 5
     public var hotkey = KeyCombo.defaultToolbar
     public var launchAtLogin = false
+    public var checkForUpdates = true
     public var countdown = 0
     public var recordingBorder = false
     public var showKeystrokes: Keystrokes = .off
@@ -113,6 +114,7 @@ extension Config {
                     return true
                 }),
             boolKey("launch-at-login", "Start reel when you log in.", \.launchAtLogin),
+            boolKey("check-for-updates", "Check GitHub for a newer release once a day.", \.checkForUpdates),
             intKey("countdown", "Seconds of 3-2-1 before recording starts. 0 = off.", \.countdown, 0...10),
             boolKey("recording-border", "Outline the recorded area while recording (not captured).", \.recordingBorder),
             enumKey("show-keystrokes", "Show pressed keys in recordings. Needs Accessibility permission.", \.showKeystrokes),

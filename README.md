@@ -35,7 +35,19 @@ On top of that, it adds a few things the built-in tool doesn't have:
 
 ## Install
 
-reel needs macOS 15 or later. There are no prebuilt releases yet, so build it from source; you'll need Xcode 16 or later.
+reel needs macOS 15 or later on Apple silicon.
+
+1. Download `reel-x.y.z.zip` from the [latest release](https://github.com/riensou/reel/releases/latest), unzip it, and move **reel.app** into Applications.
+2. Open it. reel isn't notarized by Apple (that needs a paid developer account), so the first time macOS will say it can't verify the app. Go to **System Settings → Privacy & Security**, scroll down, and click **Open Anyway**.
+   - Or, from Terminal: `xattr -dr com.apple.quarantine /Applications/reel.app`
+3. A welcome window shows the shortcut and asks for **Screen & System Audio Recording** permission.
+
+Microphone, Camera and Accessibility permissions are only requested if you turn on a feature that needs them (Accessibility is for the keystroke display).
+
+<details>
+<summary>Build from source</summary>
+
+Requires Xcode 16 or later.
 
 ```sh
 git clone https://github.com/riensou/reel.git
@@ -43,8 +55,7 @@ cd reel
 scripts/make-dev-cert.sh   # once: a local signing identity so macOS remembers reel's permissions
 scripts/install.sh         # builds reel.app into /Applications and opens it
 ```
-
-The first time you capture something, macOS asks for **Screen & System Audio Recording** permission. Microphone, Camera and Accessibility permissions are only requested if you turn on a feature that needs them (Accessibility is for the keystroke display).
+</details>
 
 ## Usage
 
@@ -89,6 +100,7 @@ thumbnail = true
 thumbnail-duration = 5
 hotkey = cmd+shift+6
 launch-at-login = false
+check-for-updates = true
 countdown = 0                    # seconds, 0 = off
 recording-border = false
 show-keystrokes = off            # off | shortcuts | all
@@ -111,6 +123,13 @@ The app binary can also capture without any UI:
 /Applications/reel.app/Contents/MacOS/reel --record 10 out.mp4 --system-audio --mic
 ```
 
+## Privacy
+
+reel doesn't collect anything, and recordings never leave your Mac. It makes two kinds of network requests, both anonymous and both to GitHub's public API:
+
+- **Update check:** once a day, reel asks for the latest release. Turn this off in Settings, or with `check-for-updates = false`.
+- **Star count:** fetched when you open Settings → About.
+
 ## How it works
 
 - **Capture:** reel is written in Swift and uses ScreenCaptureKit, which records video, system audio and microphone together. Pausing ends the current file; resuming starts a new one on the same capture stream.
@@ -129,6 +148,10 @@ Bug reports and pull requests are welcome. For development:
 ```sh
 swift test        # unit tests
 scripts/run.sh    # build a debug copy into build.noindex/ and launch it
+
+# Debug builds also have an end-to-end check of the interactive flows
+# (region picker, countdown, border, pause, cancel, recovery, trim):
+build.noindex/reel.app/Contents/MacOS/reel --self-test /tmp/reel-selftest
 ```
 
 ## License

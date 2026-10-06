@@ -17,6 +17,8 @@ struct GeneralTab: View {
             SettingRow(title: "Toolbar shortcut", detail: "Opens the capture toolbar; stops a recording in progress.") {
                 ShortcutField(combo: state.config.hotkey) { state.set("hotkey", $0.description) }
             }
+            Divider()
+            UpdatesRow(state: state, updates: state.updates)
         }
         SettingsCard("Saving", icon: "folder") {
             SettingRow(title: "Save to", detail: (state.saveDirectory(for: .screenshot).path as NSString).abbreviatingWithTildeInPath) {
@@ -58,6 +60,35 @@ struct GeneralTab: View {
         case "~/Desktop": "Desktop"
         case let p?: URL(fileURLWithPath: (p as NSString).expandingTildeInPath).lastPathComponent
         }
+    }
+}
+
+private struct UpdatesRow: View {
+    @ObservedObject var state: AppState
+    @ObservedObject var updates: UpdateChecker
+    @Environment(\.openURL) private var openURL
+
+    var body: some View {
+        SettingRow(title: "Check for updates", detail: detail) {
+            HStack(spacing: 8) {
+                if let release = updates.available {
+                    Button("Download") { openURL(release.html_url) }
+                } else {
+                    Button(updates.checking ? "Checking…" : "Check Now") {
+                        Task { await updates.check(userInitiated: true) }
+                    }
+                    .disabled(updates.checking)
+                }
+                Toggle("", isOn: state.binding("check-for-updates", \.checkForUpdates)).labelsHidden().toggleStyle(.switch)
+            }
+        }
+    }
+
+    private var detail: String {
+        if let release = updates.available, let v = Version(release.tag_name) {
+            return "reel \(v) is available (you have \(AppInfo.version))."
+        }
+        return "Once a day, asks GitHub if there's a newer release. Nothing else is sent."
     }
 }
 

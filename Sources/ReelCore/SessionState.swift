@@ -20,8 +20,33 @@ public struct SessionState: Codable, Equatable, Sendable {
     public var lastRegions: [String: CGRect] = [:]
     /// Webcam bubble center, as a fraction of the screen's visible frame.
     public var webcamPosition: CGPoint?
+    /// Has the welcome window been completed?
+    public var onboarded = false
 
     public init() {}
+
+    private enum CodingKeys: String, CodingKey {
+        case mode, action, systemAudio, microphone, microphoneID, showCursor, webcamOn, cameraID,
+             lastRegions, webcamPosition, onboarded
+    }
+
+    /// Every field is optional on decode so adding fields in an update never
+    /// throws away someone's saved state.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = SessionState()
+        mode = (try? c.decodeIfPresent(CaptureMode.self, forKey: .mode)) ?? d.mode
+        action = (try? c.decodeIfPresent(CaptureAction.self, forKey: .action)) ?? d.action
+        systemAudio = (try? c.decodeIfPresent(Bool.self, forKey: .systemAudio)) ?? d.systemAudio
+        microphone = (try? c.decodeIfPresent(Bool.self, forKey: .microphone)) ?? d.microphone
+        microphoneID = try? c.decodeIfPresent(String.self, forKey: .microphoneID)
+        showCursor = (try? c.decodeIfPresent(Bool.self, forKey: .showCursor)) ?? d.showCursor
+        webcamOn = (try? c.decodeIfPresent(Bool.self, forKey: .webcamOn)) ?? d.webcamOn
+        cameraID = try? c.decodeIfPresent(String.self, forKey: .cameraID)
+        lastRegions = (try? c.decodeIfPresent([String: CGRect].self, forKey: .lastRegions)) ?? [:]
+        webcamPosition = try? c.decodeIfPresent(CGPoint.self, forKey: .webcamPosition)
+        onboarded = (try? c.decodeIfPresent(Bool.self, forKey: .onboarded)) ?? d.onboarded
+    }
 
     private static let key = "session"
 

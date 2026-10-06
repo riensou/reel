@@ -42,6 +42,17 @@ public enum SaveLocation {
         return dir.appending(path: filename(for: kind, date: date, format: format))
     }
 
+    /// Removes scratch directories left behind by crashes or failed sessions.
+    public static func cleanStaleWork(olderThan age: TimeInterval = 6 * 3600) {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appending(path: "reel", directoryHint: .isDirectory)
+        guard let dirs = try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: [.contentModificationDateKey]) else { return }
+        for dir in dirs {
+            let modified = (try? dir.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
+            if Date.now.timeIntervalSince(modified) > age { try? fm.removeItem(at: dir) }
+        }
+    }
+
     /// A fresh scratch directory (segments, intermediate files).
     public static func workDirectory() -> URL {
         let dir = FileManager.default.temporaryDirectory.appending(path: "reel/\(UUID().uuidString)", directoryHint: .isDirectory)

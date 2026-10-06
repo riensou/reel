@@ -2,6 +2,9 @@ import AVFoundation
 import Foundation
 import QuartzCore
 import ScreenCaptureKit
+import os
+
+private let log = Logger(subsystem: "dev.reel", category: "recorder")
 
 /// What a finished capture session produced, before the Finisher turns it into one file.
 public struct Recording: Sendable {
@@ -24,6 +27,9 @@ public final class Recorder: NSObject, @unchecked Sendable {
     private var fileType: AVFileType = .mp4
     private var current: SCRecordingOutput?
     private var segments: [URL] = []
+    /// What was recorded before capture ended on its own; claimed by either
+    /// `stop()` or the `onUnexpectedStop` callback, whichever comes first.
+    private var stoppedEarly: Recording?
     private var finishWaiters: [ObjectIdentifier: CheckedContinuation<Void, Error>] = [:]
     private let sampleQueue = DispatchQueue(label: "dev.reel.samples")
 
@@ -35,8 +41,10 @@ public final class Recorder: NSObject, @unchecked Sendable {
     public private(set) var frameSize: CGSize = .zero
     public private(set) var pointScale: CGFloat = 1
 
-    /// Called when capture ends on its own (display unplugged, window closed, permission revoked).
-    public var onUnexpectedStop: ((Error) -> Void)?
+    /// Called when capture ends on its own (display unplugged, window closed,
+    /// stopped from the menu bar indicator). Includes whatever was recorded so
+    /// far, so it can still be saved.
+    public var onUnexpectedStop: ((Error, Recording?) -> Void)?
 
     public override init() { super.init() }
 
@@ -112,6 +120,12 @@ public final class Recorder: NSObject, @unchecked Sendable {
 
     /// Stops capture and returns the segments once every file has been flushed.
     public func stop() async throws -> Recording {
+        if let early = takeStoppedEarly() {
+            try? await Task.sleep(for: .seconds(1)) // let the last segment finalize
+            let kept = Self.existing(early)
+            guard !kept.segments.isEmpty else { throw ReelError.notRecording }
+            return kept
+        }
         guard let (stream, output) = lock.withLock({ () -> (SCStream, SCRecordingOutput?)? in
             stream.map { ($0, current) }
         }) else { throw ReelError.notRecording }
@@ -130,9 +144,21 @@ public final class Recorder: NSObject, @unchecked Sendable {
                       options: options, workDirectory: workDir!)
         }
         reset()
+        for url in recording.segments { await Self.waitUntilReadable(url) }
         guard !recording.segments.isEmpty else { throw ReelError.notRecording }
         return recording
     }
+
+    #if DEBUG
+    /// Stops capture underneath reel, the way macOS does when the user clicks
+    /// Stop on the menu bar screen-recording indicator.
+    public func simulateSystemStop() async {
+        guard let stream = lock.withLock({ self.stream }) else { return }
+        try? await stream.stopCapture()
+        self.stream(stream, didStopWithError: NSError(domain: "SCStreamErrorDomain", code: -3817,
+                                                      userInfo: [NSLocalizedDescriptionKey: "Stopped by the user"]))
+    }
+    #endif
 
     /// Stops and throws everything away.
     public func cancel() async {
@@ -172,8 +198,9 @@ public final class Recorder: NSObject, @unchecked Sendable {
                     self.resolve(id, .failure(error))
                     return
                 }
-                // Fallback in case the finish callback never arrives.
-                try? await Task.sleep(for: .seconds(3))
+                // Fallback in case the finish callback never arrives; stop()
+                // separately verifies every file is readable before returning.
+                try? await Task.sleep(for: .seconds(10))
                 self.resolve(id, .success(()))
             }
         }
@@ -182,6 +209,34 @@ public final class Recorder: NSObject, @unchecked Sendable {
     private func resolve(_ id: ObjectIdentifier, _ result: Result<Void, Error>) {
         let cont = lock.withLock { finishWaiters.removeValue(forKey: id) }
         cont?.resume(with: result)
+    }
+
+    /// A just-finished file can take a moment to become a valid movie (the
+    /// writer finalizes it after reporting done); poll briefly until it is.
+    static func waitUntilReadable(_ url: URL, timeout: Double = 5) async {
+        let deadline = Date.now.addingTimeInterval(timeout)
+        while Date.now < deadline {
+            let asset = AVURLAsset(url: url)
+            if let tracks = try? await asset.loadTracks(withMediaType: .video), !tracks.isEmpty,
+               let d = try? await asset.load(.duration), d.seconds > 0 {
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        log.error("segment not readable after \(timeout)s: \(url.lastPathComponent, privacy: .public)")
+    }
+
+    private func takeStoppedEarly() -> Recording? {
+        lock.withLock {
+            let r = stoppedEarly
+            stoppedEarly = nil
+            return r
+        }
+    }
+
+    private static func existing(_ r: Recording) -> Recording {
+        Recording(segments: r.segments.filter { FileManager.default.fileExists(atPath: $0.path) },
+                  options: r.options, workDirectory: r.workDirectory)
     }
 
     private func reset() {
@@ -209,14 +264,28 @@ extension Recorder: SCStreamDelegate, SCStreamOutput, SCRecordingOutputDelegate 
     public func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {}
 
     public func stream(_ stream: SCStream, didStopWithError error: Error) {
+        log.error("stream stopped: \(error.localizedDescription, privacy: .public) [\(String(describing: error), privacy: .public)]")
+        NSLog("reel: stream stopped: %@", String(describing: error))
         let waiters = lock.withLock { () -> [CheckedContinuation<Void, Error>] in
             let w = Array(finishWaiters.values)
             finishWaiters.removeAll()
             return w
         }
         if waiters.isEmpty, isRecording {
+            lock.withLock {
+                if let dir = workDir {
+                    stoppedEarly = Recording(segments: segments, options: options, workDirectory: dir)
+                }
+            }
             reset()
-            onUnexpectedStop?(error)
+            // Give the file writer a moment to finalize the last segment.
+            DispatchQueue.global().asyncAfter(deadline: .now() + 1) { [weak self] in
+                guard let self else { return }
+                // If stop() already claimed it, the caller is handling it.
+                guard let partial = self.takeStoppedEarly() else { return }
+                let kept = Self.existing(partial)
+                self.onUnexpectedStop?(error, kept.segments.isEmpty ? nil : kept)
+            }
         }
         waiters.forEach { $0.resume(throwing: error) }
     }
@@ -226,6 +295,8 @@ extension Recorder: SCStreamDelegate, SCStreamOutput, SCRecordingOutputDelegate 
     }
 
     public func recordingOutput(_ recordingOutput: SCRecordingOutput, didFailWithError error: Error) {
+        log.error("recording output failed: \(error.localizedDescription, privacy: .public) [\(String(describing: error), privacy: .public)]")
+        NSLog("reel: recording output failed: %@", String(describing: error))
         resolve(ObjectIdentifier(recordingOutput), .failure(error))
     }
 }

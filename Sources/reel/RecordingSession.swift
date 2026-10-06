@@ -46,10 +46,19 @@ final class RecordingSession {
         }
         let keep = [keystrokes?.windowID, webcam.windowID].compactMap { $0 }
 
-        recorder.onUnexpectedStop = { [weak self] error in
+        recorder.onUnexpectedStop = { [weak self] error, partial in
             DispatchQueue.main.async {
-                Toast.error(error)
-                self?.teardown()
+                guard let self, !self.stopping else { return }
+                self.stopping = true
+                let log = self.events?.stop()
+                self.events = nil
+                self.teardown()
+                if let partial {
+                    Toast.error("Recording stopped by macOS (\(error.localizedDescription)). Saved what was recorded.")
+                    Task { await self.finish(partial, log: log) }
+                } else {
+                    Toast.error(error)
+                }
             }
         }
 
@@ -92,6 +101,10 @@ final class RecordingSession {
         state.isRecording = true
         state.isPaused = false
     }
+
+    #if DEBUG
+    func simulateSystemStop() async { await recorder.simulateSystemStop() }
+    #endif
 
     func togglePause() {
         Task {

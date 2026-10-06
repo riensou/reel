@@ -12,6 +12,11 @@ rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$bin" "$app/Contents/MacOS/reel"
 cp Resources/Info.plist "$app/Contents/Info.plist"
+# REEL_BUNDLE_ID lets you test a "fresh install" without touching your real
+# permissions and settings (macOS keys both by bundle ID).
+if [ -n "${REEL_BUNDLE_ID:-}" ]; then
+    /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $REEL_BUNDLE_ID" "$app/Contents/Info.plist"
+fi
 cp Resources/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
 identity="-"
 if security find-identity -p codesigning | grep -q '"reel-dev"'; then
@@ -19,5 +24,5 @@ if security find-identity -p codesigning | grep -q '"reel-dev"'; then
 else
     echo "warning: no reel-dev identity; ad-hoc signing (run scripts/make-dev-cert.sh)" >&2
 fi
-codesign --force --sign "$identity" --identifier dev.reel "$app"
+codesign --force --sign "$identity" --identifier "${REEL_BUNDLE_ID:-dev.reel}" "$app"
 echo "$app"

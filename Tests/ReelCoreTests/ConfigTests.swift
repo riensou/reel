@@ -131,3 +131,23 @@ import Testing
         try? fm.removeItem(at: dir)
     }
 }
+
+@Suite struct SessionStateTests {
+    @Test func oldSavedStateStillLoads() throws {
+        // A blob saved by an older version, missing newer fields.
+        let old = #"{"mode":"window","action":"record","systemAudio":true,"microphone":false,"showCursor":true,"lastRegions":{}}"#
+        let s = try JSONDecoder().decode(SessionState.self, from: Data(old.utf8))
+        #expect(s.mode == .window && s.action == .record && s.systemAudio)
+        #expect(s.webcamOn && !s.onboarded)
+    }
+}
+
+@Suite struct VersionTests {
+    @Test func compares() throws {
+        #expect(try #require(Version("v0.2.0")) > #require(Version("0.1.9")))
+        #expect(try #require(Version("1.10.0")) > #require(Version("1.9.3")))
+        #expect(try #require(Version("1.0")) == #require(Version("1.0.0")))
+        #expect(try #require(Version("1.2.0-beta")) == #require(Version("1.2.0")))
+        #expect(Version("dev") == nil)
+    }
+}
