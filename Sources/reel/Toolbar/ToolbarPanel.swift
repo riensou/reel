@@ -7,6 +7,7 @@ import SwiftUI
 @MainActor
 final class ToolbarPanel: NSPanel {
     var onCancel: (() -> Void)?
+    private let mic = MicMonitor()
 
     init(state: AppState, onCapture: @escaping () -> Void, onCancel: @escaping () -> Void) {
         self.onCancel = onCancel
@@ -17,12 +18,17 @@ final class ToolbarPanel: NSPanel {
         hasShadow = true
         isMovableByWindowBackground = true
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        let host = NSHostingView(rootView: ToolbarView(state: state, onCapture: onCapture, onCancel: onCancel))
+        let host = NSHostingView(rootView: ToolbarView(state: state, mic: mic, onCapture: onCapture, onCancel: onCancel))
         host.sizingOptions = [.intrinsicContentSize]
         contentView = host
     }
 
     override var canBecomeKey: Bool { true }
+
+    override func orderOut(_ sender: Any?) {
+        mic.stop()
+        super.orderOut(sender)
+    }
 
     override func cancelOperation(_ sender: Any?) {
         onCancel?()
@@ -40,8 +46,18 @@ final class ToolbarPanel: NSPanel {
 
 private struct ToolbarView: View {
     @ObservedObject var state: AppState
+    let mic: MicMonitor
     let onCapture: () -> Void
     let onCancel: () -> Void
+
+    /// Listen only when a recording would actually use the mic.
+    private var wantsMicLevel: Bool {
+        state.prefs.action == .record && state.prefs.options.microphone
+    }
+
+    private func syncMic() {
+        if wantsMicLevel { mic.start(deviceID: state.prefs.options.microphoneID) } else { mic.stop() }
+    }
 
     var body: some View {
         HStack(spacing: 4) {
@@ -65,10 +81,9 @@ private struct ToolbarView: View {
                 help: "Record system audio", isOn: state.prefs.options.systemAudio
             ) { state.prefs.options.systemAudio.toggle() }
                 .disabled(state.prefs.action == .screenshot)
-            IconToggle(
-                symbol: state.prefs.options.microphone ? "mic.fill" : "mic.slash",
-                help: "Record microphone", isOn: state.prefs.options.microphone
-            ) { state.prefs.options.microphone.toggle() }
+            MicToggle(mic: mic, isOn: state.prefs.options.microphone, live: wantsMicLevel) {
+                state.prefs.options.microphone.toggle()
+            }
                 .disabled(state.prefs.action == .screenshot)
             IconToggle(
                 symbol: state.prefs.options.cursor.show ? "cursorarrow" : "cursorarrow.slash",
@@ -91,6 +106,9 @@ private struct ToolbarView: View {
         .padding(.vertical, 6)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.white.opacity(0.12)))
+        .onAppear(perform: syncMic)
+        .onChange(of: wantsMicLevel) { syncMic() }
+        .onChange(of: state.prefs.options.microphoneID) { syncMic() }
     }
 
     private var divider: some View {
@@ -176,6 +194,41 @@ private struct IconToggle: View {
         }
         .buttonStyle(.plain)
         .help(help)
+    }
+}
+
+/// Mic button whose glyph fills with green from the bottom as input gets louder.
+/// Its own view so 60 level updates a second don't re-render the whole toolbar.
+private struct MicToggle: View {
+    @ObservedObject var mic: MicMonitor
+    let isOn: Bool
+    let live: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            ZStack {
+                Image(systemName: isOn ? "mic.fill" : "mic.slash")
+                if isOn, live {
+                    Image(systemName: "mic.fill")
+                        .foregroundStyle(.green)
+                        .mask(alignment: .bottom) {
+                            GeometryReader { geo in
+                                Rectangle()
+                                    .frame(height: geo.size.height * CGFloat(mic.level))
+                                    .frame(maxHeight: .infinity, alignment: .bottom)
+                            }
+                        }
+                        .animation(.linear(duration: 0.08), value: mic.level)
+                }
+            }
+            .font(.system(size: 15))
+            .frame(width: 30, height: 26)
+            .background(RoundedRectangle(cornerRadius: 6).fill(isOn ? Color.primary.opacity(0.14) : .clear))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Record microphone")
     }
 }
 
