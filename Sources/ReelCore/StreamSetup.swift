@@ -22,7 +22,7 @@ enum StreamSetup {
             attempts += 1
         }
         let pid = ProcessInfo.processInfo.processIdentifier
-        let ownApps = content.applications.filter { $0.processID == pid }
+        let ownApps = options.includeOwnWindows ? [] : content.applications.filter { $0.processID == pid }
         let keep = content.windows.filter { keepWindows.contains($0.windowID) }
         if keep.count < keepWindows.count {
             NSLog("reel: %d of %d overlay windows weren't capturable in time", keepWindows.count - keep.count, keepWindows.count)

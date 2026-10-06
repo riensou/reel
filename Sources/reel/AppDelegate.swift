@@ -6,13 +6,13 @@ import ServiceManagement
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let state = AppState()
-    private let thumbnails = ThumbnailController()
+    let thumbnails = ThumbnailController()
     private lazy var webcam = WebcamBubble(state: state)
     private lazy var settings = SettingsWindowController(state: state, actions: .init(
         openConfig: { [weak self] in self?.openConfigFile() },
         revealConfig: { [weak self] in self?.revealConfigFile() }
     ))
-    private var toolbar: ToolbarPanel?
+    private(set) var toolbar: ToolbarPanel?
     private var recording: RecordingSession?
     private var statusItem: NSStatusItem!
     private var hotKey: HotKey?
@@ -58,6 +58,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         if args.contains("--show-toolbar") { showToolbar() }
         if args.contains("--show-webcam") { webcam.show() }
+        if let i = args.firstIndex(of: "--demo-scene"), let out = args[safe: i + 1] {
+            // Stages and records the README demo, then quits.
+            Task {
+                do {
+                    try await DemoScene(app: self).run(output: URL(fileURLWithPath: out))
+                    print(out)
+                } catch {
+                    FileHandle.standardError.write(Data("demo scene failed: \(error)\n".utf8))
+                }
+                NSApp.terminate(nil)
+            }
+        }
         if let i = args.firstIndex(of: "--dev-record"), let secs = Double(args[safe: i + 1] ?? "") {
             // Records the main display through the full pipeline, then stops.
             Task {
@@ -147,7 +159,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem.menu = nil
     }
 
-    @objc private func showToolbar() {
+    @objc func showToolbar() {
         closeToolbar()
         let panel = ToolbarPanel(state: state, actions: .init(
             capture: { [weak self] in self?.captureFromToolbar() },
@@ -163,7 +175,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// - Parameter keepWebcam: true when a recording is about to use the bubble.
-    private func closeToolbar(keepWebcam: Bool = false) {
+    func closeToolbar(keepWebcam: Bool = false) {
         toolbar?.orderOut(nil)
         toolbar = nil
         if !keepWebcam, recording == nil { webcam.hide() }

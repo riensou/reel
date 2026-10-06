@@ -23,9 +23,14 @@ final class ThumbnailController {
     }
 
     private func makePanel(previewFrom source: URL, destination: URL, seconds: Double) async -> ThumbnailPanel {
-        current?.commit()
         let image = await Self.preview(for: source)
-        let panel = ThumbnailPanel(destination: destination, image: image, isVideo: source.pathExtension != "png", seconds: seconds)
+        return present(image: image, isVideo: source.pathExtension != "png", destination: destination, seconds: seconds)
+    }
+
+    /// Shows a thumbnail for an already-rendered preview image.
+    func present(image: NSImage, isVideo: Bool, destination: URL, seconds: Double) -> ThumbnailPanel {
+        current?.commit()
+        let panel = ThumbnailPanel(destination: destination, image: image, isVideo: isVideo, seconds: seconds)
         panel.onClose = { [weak self, weak panel] in
             if self?.current === panel { self?.current = nil }
         }

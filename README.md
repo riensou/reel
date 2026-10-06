@@ -12,7 +12,11 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT license"></a>
 </p>
 
-<!-- TODO: demo GIF (record it with reel itself) -->
+<p align="center">
+  <img src="docs/demo.gif" width="800" alt="Recording a region with reel: toolbar, region picker, keystrokes, thumbnail">
+  <br>
+  <sub>Recorded with reel, with auto-zoom and smooth cursor on.</sub>
+</p>
 
 reel lives in the menu bar and works like macOS's built-in screenshot tool (⌘⇧5):
 - Pick a screen, window or region, then take a screenshot or record a video.

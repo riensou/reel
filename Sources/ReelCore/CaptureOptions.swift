@@ -40,6 +40,8 @@ public struct CaptureOptions: Codable, Equatable, Sendable {
     public var fps = 60
     public var format: VideoFormat = .mp4
     public var codec: VideoCodec = .auto
+    /// Capture reel's own windows too (toolbar, overlays). Only for recording reel itself.
+    public var includeOwnWindows = false
 
     public init() {}
 }

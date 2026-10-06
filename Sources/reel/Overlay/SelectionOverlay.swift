@@ -49,6 +49,11 @@ final class SelectionOverlay {
         }
     }
 
+    /// Presses the confirm pill programmatically (demo scene).
+    func confirmForDemo() {
+        panels.compactMap { $0.contentView as? OverlayView }.forEach { $0.confirmIfSelected() }
+    }
+
     private func finish(_ target: CaptureTarget?) {
         panels.forEach { $0.orderOut(nil) }
         panels.removeAll()
@@ -72,7 +77,7 @@ final class OverlayPanel: NSPanel {
     override var canBecomeKey: Bool { true }
 }
 
-private final class OverlayView: NSView {
+final class OverlayView: NSView {
     let kind: SelectionOverlay.Kind
     let screen: NSScreen
     let onFinish: (CaptureTarget?) -> Void
@@ -262,6 +267,8 @@ private final class OverlayView: NSView {
         if bounds.maxY - maxY < s { maxY = bounds.maxY }
         return NSRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
     }
+
+    func confirmIfSelected() { confirm() }
 
     private func confirm() {
         guard kind == .region, let r = rect, r.width >= 4, r.height >= 4 else { return }
