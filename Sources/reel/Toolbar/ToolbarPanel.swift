@@ -20,7 +20,8 @@ final class ToolbarPanel: NSPanel {
     init(state: AppState, actions: Actions) {
         self.actions = actions
         super.init(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
-        level = .floating
+        // Above the region overlay (screenSaver level) so it stays clickable while selecting.
+        level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
         isOpaque = false
         backgroundColor = .clear
         hasShadow = true

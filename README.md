@@ -63,7 +63,7 @@ scripts/install.sh         # builds reel.app into /Applications and opens it
 |---|---|
 | **⌘⇧6** | Open the toolbar. During a recording, stop it. (Changeable in Settings.) |
 | **Toolbar** | Screen / Window / Region · Screenshot / Record · system audio · mic · cursor · Options |
-| **Region** | Your last region is preselected. Drag to move it, use the handles to resize, ↩ to capture, Esc to cancel. |
+| **Region** | Like ⌘⇧5, your last selection appears with the toolbar. Drag inside it to move it, drag the handles to resize, or drag elsewhere for a new one. ↩ or the Capture button captures, Esc cancels. |
 | **Menu bar timer** | Click to stop the recording. Right-click to pause, resume or cancel. |
 | **Thumbnail** | Click to open, drag into another app, swipe to dismiss. Right-click to trim, export a GIF, convert between MP4 and MOV, copy or delete. |
 

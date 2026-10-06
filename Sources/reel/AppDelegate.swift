@@ -24,6 +24,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var registeredHotKey: KeyCombo?
     private var tick: Timer?
     private var subscriptions: Set<AnyCancellable> = []
+    /// Region selection shown alongside the toolbar in Region mode.
+    private(set) var regionOverlay: SelectionOverlay?
+    private var toolbarModeSubscription: AnyCancellable?
     private var lastConfig: Config?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -197,10 +200,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ))
         toolbar = panel
         panel.present(on: NSScreen.underMouse ?? NSScreen.screens[0])
+        // Like ⌘⇧5: in Region mode the selection is on screen with the toolbar.
+        toolbarModeSubscription = state.$session.map(\.mode).removeDuplicates().sink { [weak self] _ in
+            DispatchQueue.main.async { self?.syncRegionOverlay() }
+        }
+    }
+
+    private func syncRegionOverlay() {
+        let wanted = toolbar != nil && state.session.mode == .region
+        if wanted, regionOverlay == nil {
+            let overlay = SelectionOverlay()
+            overlay.attach(remembered: state.session.lastRegions,
+                           onConfirm: { [weak self] in self?.captureFromToolbar() },
+                           onCancel: { [weak self] in self?.closeToolbar() })
+            regionOverlay = overlay
+            toolbar?.orderFrontRegardless()
+        } else if !wanted, let overlay = regionOverlay {
+            overlay.close()
+            regionOverlay = nil
+        }
     }
 
     /// - Parameter keepWebcam: true when a recording is about to use the bubble.
     func closeToolbar(keepWebcam: Bool = false) {
+        toolbarModeSubscription = nil
+        regionOverlay?.close()
+        regionOverlay = nil
         toolbar?.orderOut(nil)
         toolbar = nil
         if !keepWebcam, recording == nil { webcam.hide() }
@@ -208,8 +233,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func captureFromToolbar() {
         let recordingWithWebcam = state.session.action == .record && state.config.webcam && state.session.webcamOn
+        let selected = state.session.mode == .region ? regionOverlay?.currentTarget : nil
         closeToolbar(keepWebcam: recordingWithWebcam)
-        run(mode: state.session.mode, action: state.session.action)
+        if let selected {
+            if case .region(let id, let rect) = selected { state.session.lastRegions[id.stableUUID] = rect }
+            perform(state.session.action, on: selected)
+        } else {
+            run(mode: state.session.mode, action: state.session.action)
+        }
+    }
+
+    private func perform(_ action: CaptureAction, on target: CaptureTarget) {
+        Task {
+            switch action {
+            case .screenshot: await screenshot(target)
+            case .record: await startRecording(target)
+            }
+        }
     }
 
     @objc private func menuAction(_ sender: NSMenuItem) {

@@ -51,7 +51,9 @@ final class DemoScene {
         state.session.showCursor = true
         let region = CGRect(x: window.minX - screen.frame.minX, y: screen.frame.maxY - window.maxY,
                             width: window.width, height: window.height).integral
-        state.session.lastRegions[displayID.stableUUID] = region
+        // Last selection sits off to the side; the demo drags it onto the window.
+        let offset = CGVector(dx: -150, dy: 110)
+        state.session.lastRegions[displayID.stableUUID] = region.offsetBy(dx: offset.dx, dy: offset.dy)
 
         // Record the visible area (no menu bar or Dock), reel's windows included.
         let vf = screen.visibleFrame
@@ -73,28 +75,48 @@ final class DemoScene {
         await hold(0.7)
         guard let bar = app.toolbar?.frame else { return }
 
-        // 2. Region mode, then Record.
+        // 2. Region mode shows the last selection; switch to Record.
         await move(to: NSPoint(x: bar.minX + 130, y: bar.midY), over: 0.8)
         click { self.state.session.mode = .region }
-        await hold(0.5)
+        await hold(0.6)
         await move(to: NSPoint(x: bar.minX + 208, y: bar.midY), over: 0.45)
         click { withAnimation(Design.animation) { self.state.session.action = .record } }
-        await hold(0.7)
-        guard let wide = app.toolbar?.frame else { return }
-        await move(to: NSPoint(x: wide.maxX - 44, y: wide.midY), over: 0.6)
+        await hold(0.5)
+
+        // 3. Drag the selection onto the window (real overlay, real drag events).
+        guard let view = app.regionOverlay?.viewsForTesting.first(where: { $0.screen == screen }) else { return }
+        // Selection center in screen points (the offset is in top-left display coords).
+        let grabScreen = NSPoint(x: window.midX + offset.dx, y: window.midY - offset.dy)
+        await move(to: grabScreen, over: 0.8)
+        await hold(0.2)
+        func toView(_ p: NSPoint) -> NSPoint { NSPoint(x: p.x - screen.frame.minX, y: p.y - screen.frame.minY) }
+        func mouse(_ type: NSEvent.EventType, _ p: NSPoint) -> NSEvent {
+            NSEvent.mouseEvent(with: type, location: toView(p), modifierFlags: [], timestamp: 0,
+                               windowNumber: view.window!.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+        }
+        click { view.mouseDown(with: mouse(.leftMouseDown, grabScreen)) }
+        let target = NSPoint(x: window.midX, y: window.midY)
+        let begin = Date.now
+        while true {
+            let u = min(1, Date.now.timeIntervalSince(begin) / 1.0)
+            let e = u < 0.5 ? 4 * u * u * u : 1 - pow(-2 * u + 2, 3) / 2
+            cursor = NSPoint(x: grabScreen.x + (target.x - grabScreen.x) * e, y: grabScreen.y + (target.y - grabScreen.y) * e)
+            view.mouseDragged(with: mouse(.leftMouseDragged, cursor))
+            sample()
+            if u >= 1 { break }
+            try? await Task.sleep(for: .milliseconds(16))
+        }
+        view.mouseUp(with: mouse(.leftMouseUp, cursor))
+        await hold(0.5)
+
+        // 4. Record.
+        guard let wide = app.toolbar?.frame, let target = app.regionOverlay?.currentTarget else { return }
+        await move(to: NSPoint(x: wide.maxX - 44, y: wide.midY), over: 0.7)
         click {}
         await hold(0.15)
-
-        // 3. Region picker, opening on the remembered region.
         app.closeToolbar()
-        let picker = SelectionOverlay()
-        let picked = Task { await picker.select(.region, remembered: state.session.lastRegions, actionTitle: "Record") }
-        await hold(1.0)
-        await move(to: NSPoint(x: window.midX + 36, y: window.minY - 26), over: 0.8)
-        click { picker.confirmForDemo() }
-        guard let target = await picked.value else { return }
 
-        // 4. "Recording": border + keystrokes.
+        // 5. "Recording": border + keystrokes.
         let border = RecordingBorder(target: target)
         border.show()
         let keys = KeystrokeHUD(mode: .all)
@@ -116,7 +138,7 @@ final class DemoScene {
         keys.simulate(.shortcut("⌘S"))
         await hold(1.2)
 
-        // 5. Stop → thumbnail.
+        // 6. Stop → thumbnail.
         keys.stop()
         border.hide()
         let preview = try await Screenshotter.capture(.region(displayID, region), options: options)

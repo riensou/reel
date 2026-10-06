@@ -27,12 +27,16 @@ final class SelfTest {
         config.thumbnail = false
         app.state.overrideConfig(config)
 
-        if only == "trim" {
+        if only == "toolbar" {
+            await regionPicker()
+            await toolbarRegion()
+        } else if only == "trim" {
             await trimFromThumbnail()
         } else if only == "pause" {
             for _ in 0..<5 { await pauseResume() }
         } else {
             await regionPicker()
+            await toolbarRegion()
             await windowPicker()
             await windowCapture()
             await countdown()
@@ -114,6 +118,12 @@ final class SelfTest {
                            windowNumber: view.window!.windowNumber, context: nil, eventNumber: 0, clickCount: clicks, pressure: 1)!
     }
 
+    /// Delivers an event the way AppKit does for a real click: through the
+    /// window, which hit-tests and routes drags to the view that got mouse-down.
+    private func send(_ view: NSView, _ e: NSEvent) {
+        view.window?.sendEvent(e)
+    }
+
     private func key(_ code: UInt16, in view: NSView) -> NSEvent {
         NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: view.window!.windowNumber,
                          context: nil, characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: code)!
@@ -152,9 +162,9 @@ final class SelfTest {
         let b = await pick(remembered: r) { view in
             let start = viewPoint(view, x: r.maxX, yTop: r.maxY)
             let end = viewPoint(view, x: r.maxX + 100, yTop: r.maxY + 50)
-            view.mouseDown(with: event(.leftMouseDown, start, in: view))
-            view.mouseDragged(with: event(.leftMouseDragged, end, in: view))
-            view.mouseUp(with: event(.leftMouseUp, end, in: view))
+            send(view, event(.leftMouseDown, start, in: view))
+            send(view, event(.leftMouseDragged, end, in: view))
+            send(view, event(.leftMouseUp, end, in: view))
             view.keyDown(with: key(36, in: view))
         }
         check(b == .region(screen.displayID, CGRect(x: 200, y: 150, width: 700, height: 450)), "region: drag handle resizes", "\(String(describing: b))")
@@ -163,9 +173,9 @@ final class SelfTest {
         let c = await pick(remembered: r) { view in
             let start = viewPoint(view, x: r.midX, yTop: r.midY)
             let end = viewPoint(view, x: r.midX + 40, yTop: r.midY + 30)
-            view.mouseDown(with: event(.leftMouseDown, start, in: view))
-            view.mouseDragged(with: event(.leftMouseDragged, end, in: view))
-            view.mouseUp(with: event(.leftMouseUp, end, in: view))
+            send(view, event(.leftMouseDown, start, in: view))
+            send(view, event(.leftMouseDragged, end, in: view))
+            send(view, event(.leftMouseUp, end, in: view))
             view.keyDown(with: key(36, in: view))
         }
         check(c == .region(screen.displayID, CGRect(x: 240, y: 180, width: 600, height: 400)), "region: drag inside moves", "\(String(describing: c))")
@@ -174,19 +184,37 @@ final class SelfTest {
         let d = await pick(remembered: r) { view in
             let start = viewPoint(view, x: 5, yTop: 4)
             let end = viewPoint(view, x: 150, yTop: 100)
-            view.mouseDown(with: event(.leftMouseDown, start, in: view))
-            view.mouseDragged(with: event(.leftMouseDragged, end, in: view))
-            view.mouseUp(with: event(.leftMouseUp, end, in: view))
+            send(view, event(.leftMouseDown, start, in: view))
+            send(view, event(.leftMouseDragged, end, in: view))
+            send(view, event(.leftMouseUp, end, in: view))
             view.keyDown(with: key(36, in: view))
         }
         check(d == .region(screen.displayID, CGRect(x: 0, y: 0, width: 150, height: 100)), "region: new drag + edge snapping", "\(String(describing: d))")
 
-        // Double-click inside confirms.
-        let e = await pick(remembered: r) { view in
-            let p = viewPoint(view, x: r.midX, yTop: r.midY)
-            view.mouseDown(with: event(.leftMouseDown, p, in: view, clicks: 2))
+        // Draw a new region, then click-drag inside it to move it.
+        let h = await pick(remembered: nil) { view in
+            let a = viewPoint(view, x: 400, yTop: 300), b = viewPoint(view, x: 700, yTop: 500)
+            send(view, event(.leftMouseDown, a, in: view))
+            send(view, event(.leftMouseDragged, b, in: view))
+            send(view, event(.leftMouseUp, b, in: view))
+            let inside = viewPoint(view, x: 550, yTop: 400), moved = viewPoint(view, x: 600, yTop: 380)
+            send(view, event(.leftMouseDown, inside, in: view))
+            send(view, event(.leftMouseDragged, moved, in: view))
+            send(view, event(.leftMouseUp, moved, in: view))
+            view.keyDown(with: key(36, in: view))
         }
-        check(e == .region(screen.displayID, r), "region: double-click confirms")
+        check(h == .region(screen.displayID, CGRect(x: 450, y: 280, width: 300, height: 200)), "region: draw, then drag inside to move", "\(String(describing: h))")
+
+        // A quick second click inside (macOS may call it a double-click) starts
+        // a move; it must not capture.
+        let e = await pick(remembered: r) { view in
+            let p = viewPoint(view, x: r.midX, yTop: r.midY), q = viewPoint(view, x: r.midX + 10, yTop: r.midY + 10)
+            send(view, event(.leftMouseDown, p, in: view, clicks: 2))
+            send(view, event(.leftMouseDragged, q, in: view))
+            send(view, event(.leftMouseUp, q, in: view))
+            view.keyDown(with: key(36, in: view))
+        }
+        check(e == .region(screen.displayID, r.offsetBy(dx: 10, dy: 10)), "region: quick re-click inside moves (doesn't capture)", "\(String(describing: e))")
 
         // Esc cancels.
         let f = await pick(remembered: r) { view in view.keyDown(with: key(53, in: view)) }
@@ -195,11 +223,61 @@ final class SelfTest {
         // A tiny click (no drag) on empty space doesn't confirm anything.
         let g = await pick(remembered: nil) { view in
             let p = viewPoint(view, x: 300, yTop: 300)
-            view.mouseDown(with: event(.leftMouseDown, p, in: view))
-            view.mouseUp(with: event(.leftMouseUp, p, in: view))
+            send(view, event(.leftMouseDown, p, in: view))
+            send(view, event(.leftMouseUp, p, in: view))
             view.keyDown(with: key(36, in: view))
         }
         check(g == nil, "region: stray click makes no region")
+    }
+
+    /// ⌘⇧5-style: in Region mode the toolbar shows the last selection, which
+    /// can be moved before capturing.
+    private func toolbarRegion() async {
+        let r = CGRect(x: 300, y: 200, width: 500, height: 300)
+        app.state.session.lastRegions = [screen.displayID.stableUUID: r]
+        app.state.session.mode = .region
+        app.state.session.action = .screenshot
+        app.showToolbar()
+        await wait(0.5)
+        guard let overlay = app.regionOverlay, let view = overlay.viewsForTesting.first(where: { $0.screen == screen }) else {
+            check(false, "toolbar: region selection shown with toolbar")
+            app.closeToolbar()
+            return
+        }
+        check(overlay.currentTarget == .region(screen.displayID, r), "toolbar: last region shown with the toolbar")
+
+        // Drag inside to move it.
+        let start = viewPoint(view, x: r.midX, yTop: r.midY)
+        let end = viewPoint(view, x: r.midX + 120, yTop: r.midY - 60)
+        send(view, event(.leftMouseDown, start, in: view))
+        send(view, event(.leftMouseDragged, NSPoint(x: (start.x + end.x) / 2, y: (start.y + end.y) / 2), in: view))
+        send(view, event(.leftMouseDragged, end, in: view))
+        send(view, event(.leftMouseUp, end, in: view))
+        let moved = CGRect(x: 420, y: 140, width: 500, height: 300)
+        check(overlay.currentTarget == .region(screen.displayID, moved), "toolbar: drag inside moves the selection",
+              "\(String(describing: overlay.currentTarget))")
+
+        // Enter captures what's selected (the toolbar's Capture does the same).
+        let before = Set((try? FileManager.default.contentsOfDirectory(atPath: outDir.path)) ?? [])
+        view.keyDown(with: key(36, in: view))
+        var shot: URL?
+        for _ in 0..<50 {
+            await wait(0.2)
+            let now = Set((try? FileManager.default.contentsOfDirectory(atPath: outDir.path)) ?? [])
+            if let f = now.subtracting(before).first(where: { $0.hasSuffix(".png") }) { shot = outDir.appending(path: f); break }
+        }
+        let size = shot.flatMap { NSImageRep(contentsOf: $0) }.map { CGSize(width: $0.pixelsWide, height: $0.pixelsHigh) }
+        let scale = screen.backingScaleFactor
+        check(size == CGSize(width: 500 * scale, height: 300 * scale) && app.toolbar == nil && app.regionOverlay == nil,
+              "toolbar: capture uses the moved selection and closes", "\(String(describing: size))")
+        check(app.state.session.lastRegions[screen.displayID.stableUUID] == moved, "toolbar: moved selection is remembered")
+
+        // Esc on the overlay closes everything.
+        app.showToolbar()
+        await wait(0.5)
+        if let v = app.regionOverlay?.viewsForTesting.first { v.keyDown(with: key(53, in: v)) }
+        await wait(0.3)
+        check(app.toolbar == nil && app.regionOverlay == nil, "toolbar: Esc closes toolbar and selection")
     }
 
     private func windowPicker() async {

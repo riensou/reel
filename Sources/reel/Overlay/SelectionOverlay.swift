@@ -16,7 +16,8 @@ extension NSScreen {
 /// Full-screen picker on every display.
 /// - Region: opens with your last region preselected (like ⌘⇧5). Drag inside to
 ///   move, drag the handles to resize, drag elsewhere for a new region. Enter or
-///   the pill's button confirms; Esc cancels.
+///   the pill's button confirms; Esc cancels. (No double-click-to-confirm: a
+///   quick click after drawing should start a move, not capture.)
 /// - Window: hover to highlight, click to pick.
 @MainActor
 final class SelectionOverlay {
@@ -53,6 +54,48 @@ final class SelectionOverlay {
     var viewsForTesting: [OverlayView] { panels.compactMap { $0.contentView as? OverlayView } }
     #endif
 
+    // MARK: Attached to the toolbar (like ⌘⇧5)
+
+    /// Shows the region selection alongside the toolbar: your last region (or
+    /// a centered one) is ready to move or resize, and the toolbar's
+    /// Capture/Record button uses it. Enter or double-click captures; Esc cancels.
+    func attach(remembered: [String: CGRect], onConfirm: @escaping () -> Void, onCancel: @escaping () -> Void) {
+        let home = NSScreen.underMouse ?? NSScreen.screens[0]
+        var regions = remembered
+        if !NSScreen.screens.contains(where: { regions[$0.displayID.stableUUID] != nil }) {
+            let f = home.frame
+            regions[home.displayID.stableUUID] = CGRect(x: f.width * 0.25, y: f.height * 0.25, width: f.width * 0.5, height: f.height * 0.5).integral
+        }
+        // One selection at a time: prefer the screen under the mouse.
+        let selectedScreen = regions[home.displayID.stableUUID] != nil ? home
+            : NSScreen.screens.first { regions[$0.displayID.stableUUID] != nil }
+        for screen in NSScreen.screens {
+            let panel = OverlayPanel(screen: screen)
+            let initial = screen == selectedScreen ? regions[screen.displayID.stableUUID] : nil
+            let view = OverlayView(kind: .region, screen: screen, initial: initial, actionTitle: "") { target in
+                target == nil ? onCancel() : onConfirm()
+            }
+            view.showsPill = false
+            view.onEdit = { [weak self, weak view] in
+                // Starting a selection on one display clears it on the others.
+                self?.views.filter { $0 !== view }.forEach { $0.clearSelection() }
+            }
+            panel.contentView = view
+            panel.orderFrontRegardless()
+            panels.append(panel)
+        }
+    }
+
+    /// The region currently selected in attached mode.
+    var currentTarget: CaptureTarget? { views.lazy.compactMap(\.currentRegion).first }
+
+    func close() {
+        panels.forEach { $0.orderOut(nil) }
+        panels.removeAll()
+    }
+
+    private var views: [OverlayView] { panels.compactMap { $0.contentView as? OverlayView } }
+
     /// Presses the confirm pill programmatically (demo scene).
     func confirmForDemo() {
         panels.compactMap { $0.contentView as? OverlayView }.forEach { $0.confirmIfSelected() }
@@ -85,6 +128,12 @@ final class OverlayView: NSView {
     let kind: SelectionOverlay.Kind
     let screen: NSScreen
     let onFinish: (CaptureTarget?) -> Void
+    /// False when attached to the toolbar (its button confirms instead).
+    var showsPill = true {
+        didSet { layoutPill() }
+    }
+    /// Called when the user starts changing the selection.
+    var onEdit: (() -> Void)?
 
     // Region state (view coordinates, bottom-left origin).
     private var rect: NSRect?
@@ -126,7 +175,7 @@ final class OverlayView: NSView {
 
     override func updateTrackingAreas() {
         trackingAreas.forEach(removeTrackingArea)
-        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .cursorUpdate, .activeAlways, .inVisibleRect], owner: self))
     }
 
     // MARK: Drawing
@@ -165,7 +214,7 @@ final class OverlayView: NSView {
     }
 
     private func layoutPill() {
-        guard kind == .region, let r = rect, drag == nil || { if case .new = drag! { return false } else { return true } }() else {
+        guard showsPill, kind == .region, let r = rect, drag == nil || { if case .new = drag! { return false } else { return true } }() else {
             pill.isHidden = true
             return
         }
@@ -185,15 +234,29 @@ final class OverlayView: NSView {
         return Handle.allCases.first { hypot($0.point(in: r).x - p.x, $0.point(in: r).y - p.y) <= 10 }
     }
 
+    /// The cursor for a point: open hand inside the selection (drag to move),
+    /// resize arrows on handles, crosshair elsewhere (drag for a new region).
+    private func cursor(at p: NSPoint) -> NSCursor {
+        guard kind == .region else { return .pointingHand }
+        if case .move = drag { return .closedHand }
+        if let h = handle(at: p) { return h.cursor }
+        if rect?.contains(p) == true { return .openHand }
+        return .crosshair
+    }
+
+    // AppKit resets the cursor on its own schedule; answering cursorUpdate
+    // keeps ours from being replaced by the arrow.
+    override func cursorUpdate(with event: NSEvent) {
+        cursor(at: convert(event.locationInWindow, from: nil)).set()
+    }
+
     override func mouseMoved(with event: NSEvent) {
         let p = convert(event.locationInWindow, from: nil)
+        cursor(at: p).set()
         switch kind {
         case .region:
-            if let h = handle(at: p) { h.cursor.set() }
-            else if rect?.contains(p) == true { NSCursor.openHand.set() }
-            else { NSCursor.crosshair.set() }
+            break
         case .window:
-            NSCursor.pointingHand.set()
             let found = Self.window(at: NSEvent.mouseLocation)
             let local = found.map { $0.rect.offsetBy(dx: -screen.frame.minX, dy: -screen.frame.minY) }
             if found?.id != hover?.id || local != hover?.rect {
@@ -209,10 +272,7 @@ final class OverlayView: NSView {
         case .window:
             if let h = hover { onFinish(.window(h.id)) }
         case .region:
-            if event.clickCount == 2, rect?.contains(p) == true {
-                confirm()
-                return
-            }
+            onEdit?()
             if let h = handle(at: p), let r = rect {
                 drag = .resize(h, r)
             } else if let r = rect, r.contains(p) {
@@ -251,6 +311,7 @@ final class OverlayView: NSView {
         drag = nil
         needsDisplay = true
         layoutPill()
+        cursor(at: convert(event.locationInWindow, from: nil)).set()
     }
 
     /// Pull edges within 8pt onto the screen edges.
@@ -273,6 +334,18 @@ final class OverlayView: NSView {
     }
 
     func confirmIfSelected() { confirm() }
+
+    /// The selection as a capture target (display points, top-left origin).
+    var currentRegion: CaptureTarget? {
+        guard kind == .region, let r = rect, r.width >= 4, r.height >= 4 else { return nil }
+        return .region(screen.displayID, CGRect(x: r.minX, y: bounds.height - r.maxY, width: r.width, height: r.height).integral)
+    }
+
+    func clearSelection() {
+        rect = nil
+        needsDisplay = true
+        layoutPill()
+    }
 
     private func confirm() {
         guard kind == .region, let r = rect, r.width >= 4, r.height >= 4 else { return }
@@ -349,9 +422,14 @@ private enum Handle: CaseIterable {
 
     var cursor: NSCursor {
         switch self {
-        case .left, .right: .resizeLeftRight
-        case .top, .bottom: .resizeUpDown
-        default: .crosshair
+        case .left: .frameResize(position: .left, directions: .all)
+        case .right: .frameResize(position: .right, directions: .all)
+        case .top: .frameResize(position: .top, directions: .all)
+        case .bottom: .frameResize(position: .bottom, directions: .all)
+        case .topLeft: .frameResize(position: .topLeft, directions: .all)
+        case .topRight: .frameResize(position: .topRight, directions: .all)
+        case .bottomLeft: .frameResize(position: .bottomLeft, directions: .all)
+        case .bottomRight: .frameResize(position: .bottomRight, directions: .all)
         }
     }
 }
