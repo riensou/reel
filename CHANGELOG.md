@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.2
+
+- Fixed: the region selection couldn't be moved with the mouse (clicks inside it went to the window underneath). Press inside the box, or on an edge away from the dots, and drag
+- Region mode no longer draws a default box when there's no previous selection; draw your own
+
 ## 0.1.1
 
 - Region mode works like ⌘⇧5: your last selection appears with the toolbar. Drag inside it to move, drag the handles to resize, then Capture/Record
