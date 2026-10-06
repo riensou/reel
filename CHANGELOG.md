@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.1
+
+- Region mode works like ⌘⇧5: your last selection appears with the toolbar. Drag inside it to move, drag the handles to resize, then Capture/Record
+- Clearer cursors when selecting (hand to move, resize arrows on handles)
+- Fixed: Trim did nothing if trimming took longer than the thumbnail's 5-second countdown
+- Fixed: if macOS stops a recording (e.g. Stop in the menu bar indicator), what was recorded is now saved instead of lost
+- Removed double-click to capture a region (it could capture when you meant to move the selection)
+
 ## 0.1.0
 
 First release.
