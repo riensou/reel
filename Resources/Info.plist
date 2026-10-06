@@ -2,13 +2,15 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>CFBundleIdentifier</key>
-	<string>dev.reel</string>
-	<key>CFBundleName</key>
-	<string>reel</string>
 	<key>CFBundleDisplayName</key>
 	<string>reel</string>
 	<key>CFBundleExecutable</key>
+	<string>reel</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleIdentifier</key>
+	<string>dev.reel</string>
+	<key>CFBundleName</key>
 	<string>reel</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
@@ -20,12 +22,10 @@
 	<string>15.0</string>
 	<key>LSUIElement</key>
 	<true/>
-	<key>NSHighResolutionCapable</key>
-	<true/>
-	<key>CFBundleIconFile</key>
-	<string>AppIcon</string>
 	<key>NSCameraUsageDescription</key>
 	<string>reel shows your camera in the webcam bubble when you turn it on.</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>reel records your microphone when you turn on mic capture.</string>
 </dict>
