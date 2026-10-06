@@ -1,6 +1,6 @@
 import Foundation
 
-/// User preferences, read from a ghostty-style `key = value` file.
+/// User preferences, read from a plain-text `key = value` file.
 /// See `Config.template` for the documented list of keys.
 public struct Config: Equatable, Sendable {
     public enum Keystrokes: String, CaseIterable, Sendable { case off, shortcuts, all }
@@ -36,7 +36,7 @@ public struct Config: Equatable, Sendable {
         public var description: String { "line \(line): \(message)" }
     }
 
-    /// Later lines win, like ghostty. Unknown keys and bad values become warnings
+    /// Later lines win. Unknown keys and bad values become warnings
     /// and leave the default in place.
     public static func parse(_ text: String) -> (Config, [Warning]) {
         var config = Config()

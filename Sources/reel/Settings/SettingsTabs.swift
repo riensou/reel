@@ -437,7 +437,7 @@ struct AboutTab: View {
         .padding(.bottom, 4)
 
         SettingsCard("Configuration", icon: "doc.text") {
-            Text("Every setting lives in a plain-text file, like ghostty or vim. Edit it in any editor; reel reloads it when you save.")
+            Text("All settings are stored in a plain-text file. You can edit it in any editor; reel reloads it when you save.")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
