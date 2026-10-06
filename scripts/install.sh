@@ -9,6 +9,6 @@ osascript -e 'quit app "reel"' 2>/dev/null || true
 pkill -x reel 2>/dev/null || true
 sleep 0.5
 rm -rf /Applications/reel.app
-cp -R build/reel.app /Applications/reel.app
+cp -R build.noindex/reel.app /Applications/reel.app
 open /Applications/reel.app
 echo "installed /Applications/reel.app"

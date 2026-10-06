@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds build/reel.app. Usage: scripts/bundle.sh [debug|release]
+# Builds build.noindex/reel.app (".noindex" keeps Spotlight from listing a second reel). Usage: scripts/bundle.sh [debug|release]
 # Signs with the "reel-dev" identity (scripts/make-dev-cert.sh) so macOS keeps
 # permissions across rebuilds; falls back to ad-hoc signing without it.
 set -euo pipefail
@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 config="${1:-release}"
 swift build -c "$config"
 bin="$(swift build -c "$config" --show-bin-path)/reel"
-app=build/reel.app
+app=build.noindex/reel.app
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$bin" "$app/Contents/MacOS/reel"

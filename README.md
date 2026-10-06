@@ -9,7 +9,7 @@ scripts/make-dev-cert.sh   # once: a local signing identity so permissions survi
 scripts/install.sh         # builds a release build into /Applications and launches it
 ```
 
-During development, `scripts/run.sh` builds and relaunches from `build/`.
+During development, `scripts/run.sh` builds and relaunches from `build.noindex/`.
 
 The first time it runs, macOS asks for **Screen & System Audio Recording** permission. Features you turn on may also need Microphone, Camera, or Accessibility (for keystrokes). **Settings → Permissions** shows the status of each one.
 
@@ -57,7 +57,7 @@ reel --shot out.png
 reel --record 10 out.mp4 --system-audio --mic --no-cursor
 ```
 
-(`reel` here is `build/reel.app/Contents/MacOS/reel`; it captures the main display.)
+(`reel` here is `build.noindex/reel.app/Contents/MacOS/reel`; it captures the main display.)
 
 ## Layout
 
