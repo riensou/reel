@@ -17,6 +17,10 @@ public enum Finisher {
         public var format: VideoFormat = .mp4
         public var mergeAudio = true
         public var effect: FrameEffect?
+        /// Output frame rate when effects are rendered. ScreenCaptureKit only
+        /// delivers frames when the screen changes, so effects (zoom, cursor)
+        /// must be rendered at a fixed rate to animate smoothly.
+        public var frameRate = 60
 
         public init(segments: [URL], output: URL) {
             self.segments = segments
@@ -74,6 +78,9 @@ public enum Finisher {
                 let out = effect(request.sourceImage, request.compositionTime)
                 request.finish(with: out.cropped(to: request.sourceImage.extent), context: nil)
             }
+            vc.frameDuration = CMTime(value: 1, timescale: CMTimeScale(job.frameRate))
+            // Without this the composition only emits a frame when the source has one.
+            vc.sourceTrackIDForFrameTiming = kCMPersistentTrackID_Invalid
             let o = AVAssetReaderVideoCompositionOutput(
                 videoTracks: [videoTrack],
                 videoSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
@@ -82,7 +89,7 @@ public enum Finisher {
             videoOut = o
             let size = vc.renderSize
             let codec: AVVideoCodecType = formatHint.map { CMFormatDescriptionGetMediaSubType($0) } == kCMVideoCodecType_HEVC ? .hevc : .h264
-            let fps = Double(try await videoTrack.load(.nominalFrameRate)).clamped(to: 24...60)
+            let fps = Double(job.frameRate)
             videoSettings = [
                 AVVideoCodecKey: codec,
                 AVVideoWidthKey: Int(size.width),

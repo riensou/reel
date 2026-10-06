@@ -213,7 +213,13 @@ struct DemoTab: View {
         SettingsCard("Webcam", icon: "video") {
             SettingRow(title: "Webcam bubble",
                        detail: "Adds a camera button to the toolbar. Drag the bubble to any corner; right-click it for options.") {
-                Toggle("", isOn: state.binding("webcam", \.webcam)).labelsHidden().toggleStyle(.switch)
+                Toggle("", isOn: Binding(
+                    get: { state.config.webcam },
+                    set: { on in
+                        state.set("webcam", on)
+                        if on { state.session.webcamOn = true }
+                    }
+                )).labelsHidden().toggleStyle(.switch)
             }
             if state.config.webcam {
                 Divider()
@@ -366,39 +372,67 @@ private struct PermissionRow: View {
 struct AboutTab: View {
     @ObservedObject var state: AppState
     let actions: SettingsActions
+    @Environment(\.openURL) private var openURL
 
-    private var version: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
+    private var diagnostics: String {
+        let os = ProcessInfo.processInfo.operatingSystemVersion
+        #if arch(arm64)
+        let arch = "Apple silicon"
+        #else
+        let arch = "Intel"
+        #endif
+        return "reel \(AppInfo.version)\nmacOS \(os.majorVersion).\(os.minorVersion).\(os.patchVersion) (\(arch))"
     }
 
     var body: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 12) {
             Image(nsImage: NSApp.applicationIconImage)
                 .resizable()
                 .frame(width: 72, height: 72)
-            Text("reel")
-                .font(.system(size: 20, weight: .bold, design: .rounded))
-            Text("v\(version) · An open-source ⌘⇧5 for macOS")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
+            VStack(spacing: 2) {
+                Text("reel")
+                    .font(.system(size: 22, weight: .bold, design: .rounded))
+                Text("An open-source ⌘⇧5 for macOS")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                Text("v\(AppInfo.version)")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+            GitHubCard()
+                .frame(maxWidth: 440)
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 8)
+        .padding(.bottom, 4)
 
         SettingsCard("Configuration", icon: "doc.text") {
             Text("Every setting lives in a plain-text file, like ghostty or vim. Edit it in any editor; reel reloads it when you save.")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            Text((state.configFile.url.path as NSString).abbreviatingWithTildeInPath)
-                .font(.system(size: 12, design: .monospaced))
-                .textSelection(.enabled)
-                .padding(8)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 6))
             HStack {
-                Button("Open Config", action: actions.openConfig)
-                Button("Reveal in Finder", action: actions.revealConfig)
+                Text((state.configFile.url.path as NSString).abbreviatingWithTildeInPath)
+                    .font(.system(size: 12, design: .monospaced))
+                    .textSelection(.enabled)
+                Spacer()
+                Button("Open", action: actions.openConfig)
+                Button("Reveal", action: actions.revealConfig)
+            }
+            .padding(8)
+            .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 6))
+        }
+
+        SettingsCard("Feedback", icon: "bubble.left.and.text.bubble.right") {
+            SettingRow(title: "Found a bug or have an idea?", detail: "Issues and pull requests are welcome.") {
+                Button("Open an Issue") { openURL(AppInfo.issuesURL) }
+            }
+            Divider()
+            SettingRow(title: "Build", detail: diagnostics) {
+                Button("Copy") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(diagnostics, forType: .string)
+                    Toast.info("Copied build info")
+                }
             }
         }
     }

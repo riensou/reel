@@ -57,6 +57,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             settings.show(tab: tab ?? .general)
         }
         if args.contains("--show-toolbar") { showToolbar() }
+        if args.contains("--show-webcam") { webcam.show() }
+        if let i = args.firstIndex(of: "--dev-record"), let secs = Double(args[safe: i + 1] ?? "") {
+            // Records the main display through the full pipeline, then stops.
+            Task {
+                await startRecording(.display(CGMainDisplayID()))
+                try? await Task.sleep(for: .seconds(secs))
+                recording?.stop()
+            }
+        }
     }
 
     // MARK: Config
@@ -341,4 +350,8 @@ private final class ToggleItem: NSMenuItem {
     @objc private func toggle() {
         MainActor.assumeIsolated { appState.session[keyPath: path].toggle() }
     }
+}
+
+private extension Array {
+    subscript(safe i: Int) -> Element? { indices.contains(i) ? self[i] : nil }
 }

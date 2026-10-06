@@ -36,6 +36,9 @@ final class RecordingSession {
 
         // Overlays that belong in the video must exist before the stream's
         // content filter is built so they can be kept.
+        if config.webcam, state.session.webcamOn {
+            await webcam.showWhenReady()
+        }
         if config.showKeystrokes != .off {
             let hud = KeystrokeHUD(mode: config.showKeystrokes)
             hud.start(over: rect)
@@ -156,6 +159,7 @@ final class RecordingSession {
         var job = Finisher.Job(segments: recording.segments, output: out)
         job.format = options.format
         job.mergeAudio = config.mergeAudioTracks
+        job.frameRate = config.fps
         if let log {
             job.effect = DemoEffects.make(
                 log: log, autoZoom: config.autoZoom, zoomScale: config.autoZoomScale,

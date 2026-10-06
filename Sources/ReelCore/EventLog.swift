@@ -38,6 +38,8 @@ public struct EventLog: Codable, Sendable {
     }
 
     public var frameSize: CGSize
+    /// Seconds of recorded time when the log was closed.
+    public var duration: Double = 0
     /// Captured pixels per point.
     public var scale: CGFloat
     public var samples: [Sample] = []

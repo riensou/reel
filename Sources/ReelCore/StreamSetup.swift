@@ -5,16 +5,30 @@ import ScreenCaptureKit
 /// Builds the ScreenCaptureKit filter + configuration shared by screenshots and recordings.
 enum StreamSetup {
     /// - Parameter keepWindows: windows owned by this process that should still be
-    ///   captured (e.g. the click-highlight overlay). Every other reel window is excluded.
+    ///   captured (keystroke HUD, webcam bubble). Every other reel window is excluded.
     static func make(
         target: CaptureTarget,
         options: CaptureOptions,
         keepWindows: [CGWindowID] = []
     ) async throws -> (SCContentFilter, SCStreamConfiguration) {
-        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        // Windows ordered in moments ago (keystroke HUD, webcam bubble) take a
+        // beat to show up in the shareable list; wait for them, or they'd be
+        // excluded with the rest of reel's windows.
+        var content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        var attempts = 0
+        while attempts < 20, !Set(keepWindows).isSubset(of: content.windows.map(\.windowID)) {
+            try await Task.sleep(for: .milliseconds(50))
+            content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+            attempts += 1
+        }
         let pid = ProcessInfo.processInfo.processIdentifier
         let ownApps = content.applications.filter { $0.processID == pid }
         let keep = content.windows.filter { keepWindows.contains($0.windowID) }
+        if keep.count < keepWindows.count {
+            NSLog("reel: %d of %d overlay windows weren't capturable in time", keepWindows.count - keep.count, keepWindows.count)
+        } else if !keep.isEmpty {
+            NSLog("reel: capturing %d overlay window(s) after %d retries", keep.count, attempts)
+        }
 
         let filter: SCContentFilter
         var sourceRect: CGRect?

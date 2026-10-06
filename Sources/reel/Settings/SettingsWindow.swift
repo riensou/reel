@@ -128,6 +128,8 @@ private struct SettingsView: View {
                     .padding(.bottom, 24)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .defaultScrollAnchor(.top)
+                .id(tab) // each tab opens scrolled to the top
                 Divider()
                 ConfigFooter(path: state.configFile.url, edit: actions.openConfig)
             }

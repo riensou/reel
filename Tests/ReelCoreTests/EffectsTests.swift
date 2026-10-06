@@ -63,12 +63,33 @@ import Testing
         #expect(z.amount(at: 10) == 0)
     }
 
-    @Test func cropStaysInsideFrame() {
-        let z = ZoomTimeline(clicks: [(1.0, CGPoint(x: 5, y: 5))], frame: frame, scale: 2)
-        let r = z.crop(at: 1.0, cursor: CGPoint(x: 0, y: 0))
-        #expect(r.size == CGSize(width: 1000, height: 500))
-        #expect(r.minX == 0 && r.minY == 0)
-        #expect(z.crop(at: 20, cursor: nil) == CGRect(origin: .zero, size: frame))
+    @Test func endsZoomedOut() {
+        let z = ZoomTimeline(clicks: [(4.0, CGPoint(x: 1000, y: 500))], frame: frame, scale: 2, duration: 5)
+        #expect(z.amount(at: 4.0) == 1)
+        #expect(z.amount(at: 5) < 0.01)
+    }
+
+    @Test func cameraFramesClicksAndStaysInside() {
+        let clicks: [(t: Double, p: CGPoint)] = [(3.0, CGPoint(x: 5, y: 5)), (8.0, CGPoint(x: 1500, y: 700))]
+        let z = ZoomTimeline(clicks: clicks, frame: frame, scale: 2)
+        let cam = CameraPath(zoom: z, clicks: clicks, duration: 14, cursor: { _ in nil })
+        // Zoomed into the corner click, clamped to the frame.
+        let r1 = cam.crop(at: 3.0)
+        #expect(abs(r1.width - 1000) < 1 && r1.minX <= 10 && r1.minY <= 10)
+        // Later click is inside the shot when it happens.
+        let r2 = cam.crop(at: 8.0)
+        #expect(r2.contains(CGPoint(x: 1500, y: 700)))
+        // Fully zoomed out afterwards.
+        #expect(cam.crop(at: 13.5) == CGRect(origin: .zero, size: frame))
+    }
+
+    @Test func ignoresClosingAndOffscreenClicks() {
+        var log = EventLog(frameSize: frame, scale: 2)
+        log.duration = 10
+        log.clicks = [.init(t: 2, p: CGPoint(x: 100, y: 100)),
+                      .init(t: 3, p: CGPoint(x: -50, y: 100)),     // outside the frame
+                      .init(t: 9.8, p: CGPoint(x: 1990, y: 5))]    // the click that stopped recording
+        #expect(DemoEffects.demoClicks(log).map(\.t) == [2])
     }
 }
 

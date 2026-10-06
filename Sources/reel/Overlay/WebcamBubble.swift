@@ -19,26 +19,32 @@ final class WebcamBubble {
     var windowID: CGWindowID? { panel.map { CGWindowID($0.windowNumber) } }
 
     func show() {
-        guard panel == nil else { return }
+        Task { await showWhenReady() }
+    }
+
+    /// Shows the bubble, asking for camera access first if needed. Returns once
+    /// the bubble is on screen (or couldn't be shown), so a recording can wait
+    /// for it before deciding which windows to capture.
+    @discardableResult
+    func showWhenReady() async -> Bool {
+        guard panel == nil else { return true }
         switch AVCaptureDevice.authorizationStatus(for: .video) {
         case .authorized: break
         case .notDetermined:
-            AVCaptureDevice.requestAccess(for: .video) { ok in
-                if ok { DispatchQueue.main.async { self.show() } }
-            }
-            return
+            guard await AVCaptureDevice.requestAccess(for: .video) else { return false }
+            guard panel == nil else { return true }
         default:
             Toast.error("reel needs Camera permission for the webcam bubble", action: .openPrivacy("Privacy_Camera"))
-            return
+            return false
         }
         let device = state.session.cameraID.flatMap(AVCaptureDevice.init(uniqueID:)) ?? AVCaptureDevice.default(for: .video)
         guard let device, let input = try? AVCaptureDeviceInput(device: device) else {
             Toast.error("No camera found")
-            return
+            return false
         }
         let session = AVCaptureSession()
         session.sessionPreset = .high
-        guard session.canAddInput(input) else { return }
+        guard session.canAddInput(input) else { return false }
         session.addInput(input)
         self.session = session
 
@@ -49,8 +55,11 @@ final class WebcamBubble {
         panel.setFrameOrigin(restingOrigin(for: panel.frame.size))
         panel.alphaValue = 0
         panel.orderFrontRegardless()
-        NSAnimationContext.runAnimationGroup { $0.duration = 0.2; panel.animator().alphaValue = 1 }
+        // (Explicit completion handler: inside async code the trailing-closure
+        // form resolves to the async overload.)
+        NSAnimationContext.runAnimationGroup({ $0.duration = 0.2; panel.animator().alphaValue = 1 }, completionHandler: nil)
         queue.async { session.startRunning() }
+        return true
     }
 
     func hide() {

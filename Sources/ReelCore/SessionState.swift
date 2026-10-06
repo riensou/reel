@@ -12,7 +12,9 @@ public struct SessionState: Codable, Equatable, Sendable {
     /// AVCaptureDevice.uniqueID; nil = system default.
     public var microphoneID: String?
     public var showCursor = true
-    public var webcamOn = false
+    /// Only matters when `webcam` is enabled in the config; on by default so
+    /// enabling the feature shows the bubble straight away.
+    public var webcamOn = true
     public var cameraID: String?
     /// Last region per display, keyed by the display's stable UUID string.
     public var lastRegions: [String: CGRect] = [:]

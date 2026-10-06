@@ -39,6 +39,7 @@ final class EventRecorder {
     }
 
     func stop() -> EventLog {
+        log.duration = clock().t
         timer?.invalidate()
         timer = nil
         monitors.forEach(NSEvent.removeMonitor)
