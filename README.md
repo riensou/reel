@@ -1,8 +1,8 @@
 # reel
 
-**The screen recorder macOS should have shipped with.**
+**An open-source screen recorder for macOS.**
 
-reel is a free, open-source menu-bar app for screenshots and screen recordings, built on ScreenCaptureKit. It keeps the system tool's flow (a floating thumbnail that drops the file into your screenshots folder) and adds audio/mic controls with live level meters, MP4 output, trimming, and optional demo effects: keystrokes, webcam bubble, auto-zoom and a smoothed cursor.
+reel is a free menu-bar app for screenshots and screen recordings, built on ScreenCaptureKit. It keeps the system tool's flow (a floating thumbnail that drops the file into your screenshots folder) and adds audio/mic controls with live level meters, MP4 output, trimming, and optional demo effects: keystrokes, webcam bubble, auto-zoom and a smoothed cursor.
 
 ## Install
 
