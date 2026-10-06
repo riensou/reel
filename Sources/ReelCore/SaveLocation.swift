@@ -25,22 +25,28 @@ public enum SaveLocation {
     }
 
     /// "Screenshot 2026-10-06 at 14.03.22.png", matching macOS naming.
-    public static func filename(for kind: Kind, date: Date = .now) -> String {
+    public static func filename(for kind: Kind, date: Date = .now, format: VideoFormat = .mp4) -> String {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
         let stamp = f.string(from: date)
         switch kind {
         case .screenshot: return "Screenshot \(stamp).png"
-        case .recording: return "Screen Recording \(stamp).mov"
+        case .recording: return "Screen Recording \(stamp).\(format.rawValue)"
         }
     }
 
     /// Scratch location for a capture that hasn't been "committed" by the thumbnail yet.
-    public static func temporaryURL(for kind: Kind, date: Date = .now) -> URL {
-        let dir = FileManager.default.temporaryDirectory.appending(path: "reel", directoryHint: .isDirectory)
+    public static func temporaryURL(for kind: Kind, date: Date = .now, format: VideoFormat = .mp4) -> URL {
+        let dir = workDirectory()
+        return dir.appending(path: filename(for: kind, date: date, format: format))
+    }
+
+    /// A fresh scratch directory (segments, intermediate files).
+    public static func workDirectory() -> URL {
+        let dir = FileManager.default.temporaryDirectory.appending(path: "reel/\(UUID().uuidString)", directoryHint: .isDirectory)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appending(path: filename(for: kind, date: date))
+        return dir
     }
 
     /// Moves `source` into `directory`, appending " (2)", " (3)"… if the name is taken.

@@ -22,6 +22,10 @@
 	<true/>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>NSCameraUsageDescription</key>
+	<string>reel shows your camera in the webcam bubble when you turn it on.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>reel records your microphone when you turn on mic capture.</string>
 </dict>

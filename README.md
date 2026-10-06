@@ -1,41 +1,83 @@
 # reel
 
-A sleeker, open-source ⌘⇧5 for macOS, built on ScreenCaptureKit. It keeps what works in the system tool (the floating bottom-right thumbnail that then drops the file into your screenshots folder) and puts audio, mic and cursor controls directly on the toolbar.
+A sleeker, open-source ⌘⇧5 for macOS, built on ScreenCaptureKit. It keeps the system tool's flow (a floating thumbnail that drops the file into your screenshots folder) and adds audio/mic controls with live level meters, MP4 output, trimming, and optional demo effects: keystrokes, webcam bubble, auto-zoom and a smoothed cursor.
 
-## Run
+## Install
 
 ```sh
-scripts/run.sh          # build reel.app, then launch it (menu-bar app, no Dock icon)
-scripts/bundle.sh       # build only: build/reel.app
+scripts/make-dev-cert.sh   # once: a local signing identity so permissions survive rebuilds
+scripts/install.sh         # builds a release build into /Applications and launches it
 ```
 
-The first time it runs, macOS asks for **Screen Recording** permission, plus **Microphone** permission if mic capture is on. The app is ad-hoc signed, so macOS may ask again after a rebuild.
+During development, `scripts/run.sh` builds and relaunches from `build/`.
+
+The first time it runs, macOS asks for **Screen & System Audio Recording** permission. Features you turn on may also need Microphone, Camera, or Accessibility (for keystrokes). **Settings → Permissions** shows the status of each one.
 
 ## Use
 
-- **⌘⇧6** opens the capture toolbar. While a recording is running, it stops the recording.
-  To use ⌘⇧5 instead: turn off the system shortcut in System Settings → Keyboard → Keyboard Shortcuts → Screenshots, then change the key code in `AppDelegate.swift`.
-- Toolbar: **Screen / Window / Region** · **Screenshot / Record** · system audio · mic · show cursor · Options (mic device, fps, save folder, thumbnail) · **Capture**.
-- While recording, the menu bar shows ● and a timer. Click it to stop.
-- Thumbnail: click to open the file, drag it into any app, swipe it away, or right-click for Show in Finder / Copy / Delete. If you leave it, the file is saved after 5 seconds.
-- Save folder: by default, the same place macOS screenshots go (`defaults read com.apple.screencapture location`). You can change it under Options.
+- **⌘⇧6** opens the toolbar. While recording, it stops the recording. You can change the shortcut in Settings.
+- **Toolbar:** Screen / Window / Region · Screenshot / Record · system audio, mic and webcam (Record mode only) · cursor · Options · **Capture**. The audio buttons light up with the live level before you record.
+- **Region:** your last region is preselected. Drag inside it to move it, drag the handles to resize, Enter to confirm, Esc to cancel.
+- **While recording:** click the menu bar timer to stop. Right-click it for Pause/Resume, Stop and Cancel.
+- **Thumbnail:** click to open, drag into any app, swipe to dismiss. Right-click for Trim…, Export GIF, Export as MOV/MP4, Copy, Show in Finder and Delete. If you leave it, the file saves after 5 seconds.
 
-Headless (for scripts and testing; captures the main display):
+## Settings and config file
 
-```sh
-build/reel.app/Contents/MacOS/reel --shot out.png
-build/reel.app/Contents/MacOS/reel --record 10 out.mov --system-audio --mic --no-cursor
+Settings (menu bar → **Settings…**) and a plain-text config file are two views of the same preferences. Like ghostty, the file is `~/.config/reel/config` (or `$XDG_CONFIG_HOME/reel/config`). reel reloads it whenever you save it, and the Settings window edits it in place, so your comments survive. Mistakes show up as a toast with the line number.
+
+```ini
+save-directory = system          # system | ~/path
+video-format = mp4               # mp4 | mov
+video-codec = auto               # auto (H.264 ≤ 4096 px, else HEVC) | h264 | hevc
+fps = 60
+merge-audio-tracks = true        # one audio track that plays everywhere
+thumbnail = true
+thumbnail-duration = 5
+hotkey = cmd+shift+6
+launch-at-login = false
+countdown = 0                    # 3-2-1 before recording; 0 = off
+recording-border = false         # outline the recorded area (never in the video)
+show-keystrokes = off            # off | shortcuts | all
+webcam = false                   # adds a camera toggle to the toolbar
+webcam-size = medium             # small | medium | large
+webcam-shape = circle            # circle | rounded
+auto-zoom = false                # zoom in on clicks after recording
+auto-zoom-scale = 1.8
+smooth-cursor = false            # redraw the cursor along a smoothed path
 ```
 
-Recordings are HEVC `.mov` files, with system audio and mic on separate audio tracks.
+Which mode you last used, the toolbar toggles and your last regions are session state, not preferences. They're remembered separately.
+
+Auto-zoom and smooth cursor are applied after you stop, which means re-encoding the video. The thumbnail shows progress while that runs; on Apple silicon it takes a fraction of the recording's length.
+
+## Headless
+
+```sh
+reel --shot out.png
+reel --record 10 out.mp4 --system-audio --mic --no-cursor
+```
+
+(`reel` here is `build/reel.app/Contents/MacOS/reel`; it captures the main display.)
 
 ## Layout
 
-- `Sources/ReelCore`: capture engine with no UI (`Recorder`, `Screenshotter`, `SaveLocation`, `Preferences`)
-- `Sources/reel`: the menu-bar app (toolbar, region and window picker, thumbnail)
+- `Sources/ReelCore`: the engine, with no UI.
+  - `Recorder`: ScreenCaptureKit, plus pause/resume as separate segments.
+  - `Finisher`: joins the segments, mixes the audio, applies effects.
+  - `Config`, `ConfigFile`: parsing, in-place edits, file watching.
+  - `CursorTrack`, `ZoomTimeline`, `DemoEffects`: auto-zoom and the smoothed cursor.
+  - `VideoExport`: trim, remux and GIF.
+- `Sources/reel`: the menu-bar app.
+  - Toolbar.
+  - Overlays: region picker, border, countdown, keystrokes, webcam.
+  - Thumbnail.
+  - Settings.
+  - Toasts.
+- `Tests/ReelCoreTests`: run with `swift test`.
 
 ## Roadmap
 
-1. ~~Recorder~~ (this)
-2. `reel` CLI and an MCP server: `start_recording`, `stop_recording`, `screenshot`, `marker`, so any agent can control the recorder
-3. **Demo mode**: describe a demo, Claude operates the Mac with computer use while reel records, then post-processing cuts the agent's thinking pauses, smooths the cursor and zooms in on clicks
+1. ~~Recorder~~
+2. ~~Polish: settings, config, MP4, trim/GIF, demo effects~~
+3. A `reel` CLI and MCP server so agents can drive the recorder.
+4. **Demo mode:** describe a demo; Claude operates the Mac with computer use while reel records and polishes it.

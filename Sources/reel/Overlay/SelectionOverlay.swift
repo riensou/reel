@@ -1,5 +1,6 @@
 import AppKit
 import ReelCore
+import SwiftUI
 
 extension NSScreen {
     var displayID: CGDirectDisplayID {
@@ -12,8 +13,11 @@ extension NSScreen {
     }
 }
 
-/// Full-screen picker shown on every display: drag out a region, or hover + click a window.
-/// Esc cancels.
+/// Full-screen picker on every display.
+/// - Region: opens with your last region preselected (like ⌘⇧5). Drag inside to
+///   move, drag the handles to resize, drag elsewhere for a new region. Enter or
+///   the pill's button confirms; Esc cancels.
+/// - Window: hover to highlight, click to pick.
 @MainActor
 final class SelectionOverlay {
     enum Kind { case region, window }
@@ -21,12 +25,16 @@ final class SelectionOverlay {
     private var panels: [NSPanel] = []
     private var continuation: CheckedContinuation<CaptureTarget?, Never>?
 
-    func select(_ kind: Kind) async -> CaptureTarget? {
+    /// - Parameters:
+    ///   - remembered: last regions keyed by display UUID (display-local points, top-left origin).
+    ///   - actionTitle: "Capture" or "Record", shown on the confirm pill.
+    func select(_ kind: Kind, remembered: [String: CGRect] = [:], actionTitle: String = "Capture") async -> CaptureTarget? {
         await withCheckedContinuation { cont in
             continuation = cont
             for screen in NSScreen.screens {
                 let panel = OverlayPanel(screen: screen)
-                let view = OverlayView(kind: kind, screen: screen) { [weak self] target in
+                let initial = remembered[screen.displayID.stableUUID]
+                let view = OverlayView(kind: kind, screen: screen, initial: initial, actionTitle: actionTitle) { [weak self] target in
                     self?.finish(target)
                 }
                 panel.contentView = view
@@ -69,15 +77,37 @@ private final class OverlayView: NSView {
     let screen: NSScreen
     let onFinish: (CaptureTarget?) -> Void
 
-    private var dragStart: NSPoint?
-    private var dragRect: NSRect?
+    // Region state (view coordinates, bottom-left origin).
+    private var rect: NSRect?
+    private enum Drag { case new(NSPoint), move(NSPoint, NSRect), resize(Handle, NSRect) }
+    private var drag: Drag?
+    private let pill: NSHostingView<ConfirmPill>
+    private let pillModel: PillModel
+
+    // Window state.
     private var hover: (id: CGWindowID, rect: NSRect)?
 
-    init(kind: SelectionOverlay.Kind, screen: NSScreen, onFinish: @escaping (CaptureTarget?) -> Void) {
+    private static let handleRadius: CGFloat = 4.5
+    private static let snap: CGFloat = 8
+
+    init(kind: SelectionOverlay.Kind, screen: NSScreen, initial: CGRect?, actionTitle: String,
+         onFinish: @escaping (CaptureTarget?) -> Void) {
         self.kind = kind
         self.screen = screen
         self.onFinish = onFinish
+        pillModel = PillModel(title: actionTitle)
+        pill = NSHostingView(rootView: ConfirmPill(model: pillModel))
         super.init(frame: NSRect(origin: .zero, size: screen.frame.size))
+        pillModel.confirm = { [weak self] in self?.confirm() }
+        pill.isHidden = true
+        addSubview(pill)
+        if kind == .region, let initial {
+            // Display-local top-left → view bottom-left, clamped to this screen.
+            let r = NSRect(x: initial.minX, y: bounds.height - initial.maxY, width: initial.width, height: initial.height)
+            let clamped = r.intersection(bounds)
+            if clamped.width >= 4, clamped.height >= 4 { rect = clamped }
+        }
+        layoutPill()
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -87,115 +117,176 @@ private final class OverlayView: NSView {
 
     override func updateTrackingAreas() {
         trackingAreas.forEach(removeTrackingArea)
-        addTrackingArea(NSTrackingArea(
-            rect: .zero,
-            options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect, .cursorUpdate],
-            owner: self
-        ))
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
     }
 
-    override func cursorUpdate(with event: NSEvent) {
-        (kind == .region ? NSCursor.crosshair : NSCursor.pointingHand).set()
-    }
+    // MARK: Drawing
 
     override func draw(_ dirtyRect: NSRect) {
         switch kind {
         case .region:
-            NSColor.black.withAlphaComponent(0.25).setFill()
+            NSColor.black.withAlphaComponent(0.3).setFill()
             bounds.fill()
-            guard let r = dragRect else { return }
+            guard let r = rect else { return }
             NSColor.clear.setFill()
             r.fill(using: .copy)
-            NSColor.white.setStroke()
+            NSColor.white.withAlphaComponent(0.9).setStroke()
             let path = NSBezierPath(rect: r.insetBy(dx: -0.5, dy: -0.5))
             path.lineWidth = 1
             path.stroke()
-            drawLabel("\(Int(r.width)) × \(Int(r.height))", near: r)
+            for h in Handle.allCases {
+                let c = h.point(in: r)
+                let dot = NSBezierPath(ovalIn: NSRect(x: c.x - Self.handleRadius, y: c.y - Self.handleRadius,
+                                                      width: Self.handleRadius * 2, height: Self.handleRadius * 2))
+                NSColor.white.setFill()
+                dot.fill()
+                NSColor.black.withAlphaComponent(0.35).setStroke()
+                dot.lineWidth = 0.5
+                dot.stroke()
+            }
         case .window:
             guard let h = hover else { return }
-            NSColor.systemBlue.withAlphaComponent(0.25).setFill()
-            h.rect.fill()
-            NSColor.systemBlue.setStroke()
-            let path = NSBezierPath(rect: h.rect)
+            NSColor.controlAccentColor.withAlphaComponent(0.22).setFill()
+            NSBezierPath(roundedRect: h.rect, xRadius: 10, yRadius: 10).fill()
+            NSColor.controlAccentColor.setStroke()
+            let path = NSBezierPath(roundedRect: h.rect.insetBy(dx: 1, dy: 1), xRadius: 10, yRadius: 10)
             path.lineWidth = 2
             path.stroke()
         }
     }
 
-    private func drawLabel(_ text: String, near r: NSRect) {
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium),
-            .foregroundColor: NSColor.white,
-        ]
-        let s = NSAttributedString(string: text, attributes: attrs)
-        let size = s.size()
-        var origin = NSPoint(x: r.maxX - size.width - 6, y: r.minY - size.height - 8)
-        if origin.y < 4 { origin.y = r.minY + 6 }
-        let bg = NSRect(x: origin.x - 5, y: origin.y - 2, width: size.width + 10, height: size.height + 4)
-        NSColor.black.withAlphaComponent(0.7).setFill()
-        NSBezierPath(roundedRect: bg, xRadius: 4, yRadius: 4).fill()
-        s.draw(at: origin)
+    private func layoutPill() {
+        guard kind == .region, let r = rect, drag == nil || { if case .new = drag! { return false } else { return true } }() else {
+            pill.isHidden = true
+            return
+        }
+        pillModel.size = "\(Int(r.width)) × \(Int(r.height))"
+        let size = pill.fittingSize
+        var origin = NSPoint(x: r.midX - size.width / 2, y: r.minY - size.height - 10)
+        if origin.y < 8 { origin.y = r.minY + 10 } // no room below: tuck inside
+        origin.x = min(max(origin.x, 8), bounds.width - size.width - 8)
+        pill.frame = NSRect(origin: origin, size: size)
+        pill.isHidden = false
     }
 
-    // MARK: Region
+    // MARK: Mouse
+
+    private func handle(at p: NSPoint) -> Handle? {
+        guard let r = rect else { return nil }
+        return Handle.allCases.first { hypot($0.point(in: r).x - p.x, $0.point(in: r).y - p.y) <= 10 }
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        let p = convert(event.locationInWindow, from: nil)
+        switch kind {
+        case .region:
+            if let h = handle(at: p) { h.cursor.set() }
+            else if rect?.contains(p) == true { NSCursor.openHand.set() }
+            else { NSCursor.crosshair.set() }
+        case .window:
+            NSCursor.pointingHand.set()
+            let found = Self.window(at: NSEvent.mouseLocation)
+            let local = found.map { $0.rect.offsetBy(dx: -screen.frame.minX, dy: -screen.frame.minY) }
+            if found?.id != hover?.id || local != hover?.rect {
+                hover = found.flatMap { f in local.map { (f.id, $0) } }
+                needsDisplay = true
+            }
+        }
+    }
 
     override func mouseDown(with event: NSEvent) {
         let p = convert(event.locationInWindow, from: nil)
         switch kind {
-        case .region:
-            dragStart = p
         case .window:
             if let h = hover { onFinish(.window(h.id)) }
+        case .region:
+            if event.clickCount == 2, rect?.contains(p) == true {
+                confirm()
+                return
+            }
+            if let h = handle(at: p), let r = rect {
+                drag = .resize(h, r)
+            } else if let r = rect, r.contains(p) {
+                drag = .move(p, r)
+                NSCursor.closedHand.set()
+            } else {
+                drag = .new(p)
+            }
+            layoutPill()
         }
     }
 
     override func mouseDragged(with event: NSEvent) {
-        guard kind == .region, let start = dragStart else { return }
+        guard kind == .region, let drag else { return }
         var p = convert(event.locationInWindow, from: nil)
         p.x = min(max(p.x, 0), bounds.maxX)
         p.y = min(max(p.y, 0), bounds.maxY)
-        dragRect = NSRect(x: min(start.x, p.x), y: min(start.y, p.y), width: abs(p.x - start.x), height: abs(p.y - start.y))
+        switch drag {
+        case .new(let start):
+            rect = snapped(NSRect(x: min(start.x, p.x), y: min(start.y, p.y), width: abs(p.x - start.x), height: abs(p.y - start.y)))
+        case .move(let start, let orig):
+            var r = orig.offsetBy(dx: p.x - start.x, dy: p.y - start.y)
+            r.origin.x = min(max(r.minX, 0), bounds.width - r.width)
+            r.origin.y = min(max(r.minY, 0), bounds.height - r.height)
+            rect = snapped(r, keepSize: true)
+        case .resize(let h, let orig):
+            rect = snapped(h.resize(orig, to: p))
+        }
         needsDisplay = true
+        layoutPill()
     }
 
     override func mouseUp(with event: NSEvent) {
         guard kind == .region else { return }
-        defer { dragStart = nil }
-        guard let r = dragRect, r.width >= 4, r.height >= 4 else {
-            dragRect = nil
-            needsDisplay = true
-            return
+        if case .new = drag, let r = rect, r.width < 4 || r.height < 4 { rect = nil }
+        drag = nil
+        needsDisplay = true
+        layoutPill()
+    }
+
+    /// Pull edges within 8pt onto the screen edges.
+    private func snapped(_ r: NSRect, keepSize: Bool = false) -> NSRect {
+        var r = r
+        let s = Self.snap
+        if keepSize {
+            if r.minX < s { r.origin.x = 0 }
+            if bounds.maxX - r.maxX < s { r.origin.x = bounds.maxX - r.width }
+            if r.minY < s { r.origin.y = 0 }
+            if bounds.maxY - r.maxY < s { r.origin.y = bounds.maxY - r.height }
+            return r
         }
+        var minX = r.minX, minY = r.minY, maxX = r.maxX, maxY = r.maxY
+        if minX < s { minX = 0 }
+        if minY < s { minY = 0 }
+        if bounds.maxX - maxX < s { maxX = bounds.maxX }
+        if bounds.maxY - maxY < s { maxY = bounds.maxY }
+        return NSRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+    }
+
+    private func confirm() {
+        guard kind == .region, let r = rect, r.width >= 4, r.height >= 4 else { return }
         // View space is bottom-left; ScreenCaptureKit wants display points, top-left.
-        let flipped = CGRect(x: r.minX, y: bounds.height - r.maxY, width: r.width, height: r.height)
+        let flipped = CGRect(x: r.minX, y: bounds.height - r.maxY, width: r.width, height: r.height).integral
         onFinish(.region(screen.displayID, flipped))
     }
 
-    // MARK: Window
+    // MARK: Keys
 
-    override func mouseMoved(with event: NSEvent) {
-        guard kind == .window else { return }
-        let found = Self.window(at: NSEvent.mouseLocation)
-        let rect = found.map { r -> NSRect in
-            let local = r.rect.offsetBy(dx: -screen.frame.minX, dy: -screen.frame.minY)
-            return local
-        }
-        if found?.id != hover?.id || rect != hover?.rect {
-            hover = found.flatMap { f in rect.map { (f.id, $0) } }
-            needsDisplay = true
+    override func keyDown(with event: NSEvent) {
+        switch Int(event.keyCode) {
+        case 53: onFinish(nil)              // Esc
+        case 36, 76: confirm()              // Return, Enter
+        default: super.keyDown(with: event)
         }
     }
 
-    override func mouseExited(with event: NSEvent) {
-        if kind == .window {
-            hover = nil
-            needsDisplay = true
-        }
+    override func cancelOperation(_ sender: Any?) {
+        onFinish(nil)
     }
 
     /// Topmost normal-layer window under a global (bottom-left origin) point, in the same space.
     private static func window(at point: NSPoint) -> (id: CGWindowID, rect: NSRect)? {
-        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        let primaryHeight = CaptureGeometry.primaryHeight
         let cgPoint = CGPoint(x: point.x, y: primaryHeight - point.y)
         let pid = ProcessInfo.processInfo.processIdentifier
         guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
@@ -208,18 +299,84 @@ private final class OverlayView: NSView {
                   let b = CGRect(dictionaryRepresentation: boundsDict),
                   b.contains(cgPoint), b.width > 40, b.height > 40
             else { continue }
-            return (id, NSRect(x: b.minX, y: primaryHeight - b.maxY, width: b.width, height: b.height))
+            return (id, CaptureGeometry.nsRect(fromCG: b))
         }
         return nil
     }
+}
 
-    // MARK: Keys
+private enum Handle: CaseIterable {
+    case bottomLeft, bottom, bottomRight, right, topRight, top, topLeft, left
 
-    override func keyDown(with event: NSEvent) {
-        if event.keyCode == 53 { onFinish(nil) } // Esc
+    func point(in r: NSRect) -> NSPoint {
+        switch self {
+        case .bottomLeft: NSPoint(x: r.minX, y: r.minY)
+        case .bottom: NSPoint(x: r.midX, y: r.minY)
+        case .bottomRight: NSPoint(x: r.maxX, y: r.minY)
+        case .right: NSPoint(x: r.maxX, y: r.midY)
+        case .topRight: NSPoint(x: r.maxX, y: r.maxY)
+        case .top: NSPoint(x: r.midX, y: r.maxY)
+        case .topLeft: NSPoint(x: r.minX, y: r.maxY)
+        case .left: NSPoint(x: r.minX, y: r.midY)
+        }
     }
 
-    override func cancelOperation(_ sender: Any?) {
-        onFinish(nil)
+    func resize(_ r: NSRect, to p: NSPoint) -> NSRect {
+        var minX = r.minX, minY = r.minY, maxX = r.maxX, maxY = r.maxY
+        switch self {
+        case .bottomLeft: minX = p.x; minY = p.y
+        case .bottom: minY = p.y
+        case .bottomRight: maxX = p.x; minY = p.y
+        case .right: maxX = p.x
+        case .topRight: maxX = p.x; maxY = p.y
+        case .top: maxY = p.y
+        case .topLeft: minX = p.x; maxY = p.y
+        case .left: minX = p.x
+        }
+        return NSRect(x: min(minX, maxX), y: min(minY, maxY), width: abs(maxX - minX), height: abs(maxY - minY))
+    }
+
+    var cursor: NSCursor {
+        switch self {
+        case .left, .right: .resizeLeftRight
+        case .top, .bottom: .resizeUpDown
+        default: .crosshair
+        }
+    }
+}
+
+@MainActor
+private final class PillModel: ObservableObject {
+    @Published var size = ""
+    let title: String
+    var confirm: () -> Void = {}
+    init(title: String) { self.title = title }
+}
+
+/// "1280 × 720   [Record]" below the selection.
+private struct ConfirmPill: View {
+    @ObservedObject var model: PillModel
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Text(model.size)
+                .font(.system(size: 12, weight: .medium))
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+            Button(action: model.confirm) {
+                Text(model.title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(Capsule().fill(model.title == "Record" ? Color.red : Color.accentColor))
+                    .foregroundStyle(.white)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.leading, 12)
+        .padding(.trailing, 5)
+        .padding(.vertical, 5)
+        .reelSurface(radius: 16)
+        .fixedSize()
     }
 }

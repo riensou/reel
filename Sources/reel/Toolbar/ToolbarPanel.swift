@@ -2,16 +2,23 @@ import AppKit
 import ReelCore
 import SwiftUI
 
-/// The ⌘⇧5-style floating bar, with audio/mic/cursor toggles surfaced right on it
-/// instead of buried in a menu.
+/// The ⌘⇧5-style floating bar. Recording-only controls (audio, mic, webcam)
+/// only appear in Record mode, and the webcam toggle only when enabled in config.
 @MainActor
 final class ToolbarPanel: NSPanel {
-    var onCancel: (() -> Void)?
+    struct Actions {
+        var capture: () -> Void
+        var cancel: () -> Void
+        var openSettings: () -> Void
+        var webcamChanged: (Bool) -> Void
+    }
+
+    private let actions: Actions
     private let mic = MicMonitor()
     private let systemAudio = SystemAudioMonitor()
 
-    init(state: AppState, onCapture: @escaping () -> Void, onCancel: @escaping () -> Void) {
-        self.onCancel = onCancel
+    init(state: AppState, actions: Actions) {
+        self.actions = actions
         super.init(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         level = .floating
         isOpaque = false
@@ -19,7 +26,10 @@ final class ToolbarPanel: NSPanel {
         hasShadow = true
         isMovableByWindowBackground = true
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        let host = NSHostingView(rootView: ToolbarView(state: state, mic: mic, systemAudio: systemAudio, onCapture: onCapture, onCancel: onCancel))
+        let view = ToolbarView(state: state, mic: mic, systemAudio: systemAudio, actions: actions) { [weak self] size in
+            self?.resize(to: size)
+        }
+        let host = NSHostingView(rootView: view)
         host.sizingOptions = [.intrinsicContentSize]
         contentView = host
     }
@@ -33,7 +43,7 @@ final class ToolbarPanel: NSPanel {
     }
 
     override func cancelOperation(_ sender: Any?) {
-        onCancel?()
+        actions.cancel()
     }
 
     func present(on screen: NSScreen) {
@@ -44,68 +54,79 @@ final class ToolbarPanel: NSPanel {
         NSApp.activate()
         makeKeyAndOrderFront(nil)
     }
+
+    /// Keeps the bar centered where it is when controls appear or disappear.
+    private func resize(to size: CGSize) {
+        guard size.width > 0, abs(size.width - frame.width) > 0.5 || abs(size.height - frame.height) > 0.5 else { return }
+        setFrame(NSRect(x: frame.midX - size.width / 2, y: frame.minY, width: size.width, height: size.height), display: true)
+    }
 }
 
 private struct ToolbarView: View {
     @ObservedObject var state: AppState
     let mic: MicMonitor
     let systemAudio: SystemAudioMonitor
-    let onCapture: () -> Void
-    let onCancel: () -> Void
+    let actions: ToolbarPanel.Actions
+    let onSize: (CGSize) -> Void
+
+    private var recording: Bool { state.session.action == .record }
 
     /// Meter only what a recording would actually capture.
-    private var wantsMicLevel: Bool {
-        state.prefs.action == .record && state.prefs.options.microphone
-    }
-
-    private var wantsSystemLevel: Bool {
-        state.prefs.action == .record && state.prefs.options.systemAudio
-    }
+    private var wantsMicLevel: Bool { recording && state.session.microphone }
+    private var wantsSystemLevel: Bool { recording && state.session.systemAudio }
 
     private func syncMeters() {
-        if wantsMicLevel { mic.start(deviceID: state.prefs.options.microphoneID) } else { mic.stop() }
+        if wantsMicLevel { mic.start(deviceID: state.session.microphoneID) } else { mic.stop() }
         if wantsSystemLevel { systemAudio.start() } else { systemAudio.stop() }
     }
 
+    private var webcamVisible: Bool { recording && state.config.webcam && state.session.webcamOn }
+
     var body: some View {
         HStack(spacing: 4) {
-            IconButton(symbol: "xmark.circle.fill", help: "Close (Esc)", action: onCancel)
+            IconButton(symbol: "xmark.circle.fill", help: "Close (Esc)", action: actions.cancel)
                 .foregroundStyle(.secondary)
             divider
             ForEach(CaptureMode.allCases, id: \.self) { mode in
-                IconToggle(symbol: mode.symbol, help: mode.help, isOn: state.prefs.mode == mode) {
-                    state.prefs.mode = mode
+                IconToggle(symbol: mode.symbol, help: mode.help, isOn: state.session.mode == mode) {
+                    state.session.mode = mode
                 }
             }
             divider
             ForEach(CaptureAction.allCases, id: \.self) { action in
-                IconToggle(symbol: action.symbol, help: action.help, isOn: state.prefs.action == action) {
-                    state.prefs.action = action
+                IconToggle(symbol: action.symbol, help: action.help, isOn: state.session.action == action) {
+                    withAnimation(Design.animation) { state.session.action = action }
                 }
             }
             divider
-            LevelToggle(
-                meter: systemAudio.meter, onSymbol: "speaker.wave.2.fill", offSymbol: "speaker.slash",
-                help: "Record system audio", isOn: state.prefs.options.systemAudio, live: wantsSystemLevel
-            ) { state.prefs.options.systemAudio.toggle() }
-                .disabled(state.prefs.action == .screenshot)
-            LevelToggle(
-                meter: mic.meter, onSymbol: "mic.fill", offSymbol: "mic.slash",
-                help: "Record microphone", isOn: state.prefs.options.microphone, live: wantsMicLevel
-            ) { state.prefs.options.microphone.toggle() }
-                .disabled(state.prefs.action == .screenshot)
+            if recording {
+                LevelToggle(
+                    meter: systemAudio.meter, onSymbol: "speaker.wave.2.fill", offSymbol: "speaker.slash",
+                    help: "Record system audio", isOn: state.session.systemAudio, live: wantsSystemLevel
+                ) { state.session.systemAudio.toggle() }
+                LevelToggle(
+                    meter: mic.meter, onSymbol: "mic.fill", offSymbol: "mic.slash",
+                    help: "Record microphone", isOn: state.session.microphone, live: wantsMicLevel
+                ) { state.session.microphone.toggle() }
+                if state.config.webcam {
+                    IconToggle(
+                        symbol: state.session.webcamOn ? "video.fill" : "video.slash",
+                        help: "Webcam bubble", isOn: state.session.webcamOn
+                    ) { state.session.webcamOn.toggle() }
+                }
+            }
             IconToggle(
-                symbol: state.prefs.options.cursor.show ? "cursorarrow" : "cursorarrow.slash",
-                help: "Show mouse cursor", isOn: state.prefs.options.cursor.show
-            ) { state.prefs.options.cursor.show.toggle() }
+                symbol: state.session.showCursor ? "cursorarrow" : "cursorarrow.slash",
+                help: "Show mouse cursor", isOn: state.session.showCursor
+            ) { state.session.showCursor.toggle() }
             divider
-            OptionsMenu(state: state)
-            Button(action: onCapture) {
-                Text(state.prefs.action == .record ? "Record" : "Capture")
+            OptionsMenu(state: state, openSettings: actions.openSettings)
+            Button(action: actions.capture) {
+                Text(recording ? "Record" : "Capture")
                     .font(.system(size: 13, weight: .semibold))
                     .padding(.horizontal, 12)
                     .padding(.vertical, 5)
-                    .background(Capsule().fill(state.prefs.action == .record ? Color.red : Color.accentColor))
+                    .background(Capsule().fill(recording ? Color.red : Color.accentColor))
                     .foregroundStyle(.white)
             }
             .buttonStyle(.plain)
@@ -113,12 +134,17 @@ private struct ToolbarView: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.white.opacity(0.12)))
-        .onAppear(perform: syncMeters)
+        .reelSurface()
+        .fixedSize()
+        .onGeometryChange(for: CGSize.self) { $0.size } action: { onSize($0) }
+        .onAppear {
+            syncMeters()
+            actions.webcamChanged(webcamVisible)
+        }
         .onChange(of: wantsMicLevel) { syncMeters() }
         .onChange(of: wantsSystemLevel) { syncMeters() }
-        .onChange(of: state.prefs.options.microphoneID) { syncMeters() }
+        .onChange(of: state.session.microphoneID) { syncMeters() }
+        .onChange(of: webcamVisible) { actions.webcamChanged(webcamVisible) }
     }
 
     private var divider: some View {
@@ -128,42 +154,36 @@ private struct ToolbarView: View {
 
 private struct OptionsMenu: View {
     @ObservedObject var state: AppState
+    let openSettings: () -> Void
 
     var body: some View {
         Menu {
-            Section("Microphone") {
-                Picker("Microphone", selection: $state.prefs.options.microphoneID) {
-                    Text("System Default").tag(String?.none)
-                    ForEach(state.microphones, id: \.uniqueID) { device in
-                        Text(device.localizedName).tag(Optional(device.uniqueID))
+            if state.session.action == .record {
+                Section("Microphone") {
+                    Picker("Microphone", selection: $state.session.microphoneID) {
+                        Text("System Default").tag(String?.none)
+                        ForEach(state.microphones, id: \.uniqueID) { device in
+                            Text(device.localizedName).tag(Optional(device.uniqueID))
+                        }
                     }
+                    .pickerStyle(.inline)
+                    .labelsHidden()
                 }
-                .pickerStyle(.inline)
-                .labelsHidden()
-            }
-            Section("Frame Rate") {
-                Picker("Frame Rate", selection: $state.prefs.options.fps) {
-                    Text("30 fps").tag(30)
-                    Text("60 fps").tag(60)
-                }
-                .pickerStyle(.inline)
-                .labelsHidden()
             }
             Section("Save To") {
                 Button {
-                    state.prefs.saveDirectory = nil
+                    state.set("save-directory", "system")
                 } label: {
-                    check(state.prefs.saveDirectory == nil,
+                    check(state.config.saveDirectory == nil,
                           "System Location (\(SaveLocation.directory(for: .screenshot).lastPathComponent))")
                 }
                 Button {
-                    state.prefs.saveDirectory = "~/Desktop"
-                } label: { check(state.prefs.saveDirectory == "~/Desktop", "Desktop") }
-                Button("Other Location…") { chooseFolder() }
+                    state.set("save-directory", "~/Desktop")
+                } label: { check(state.config.saveDirectory == "~/Desktop", "Desktop") }
+                Button("Other Location…") { chooseSaveFolder(state) }
             }
-            Section {
-                Toggle("Show Floating Thumbnail", isOn: $state.prefs.showThumbnail)
-            }
+            Divider()
+            Button("Settings…", action: openSettings)
         } label: {
             Text("Options").font(.system(size: 13))
         }
@@ -175,20 +195,24 @@ private struct OptionsMenu: View {
     private func check(_ on: Bool, _ title: String) -> some View {
         on ? Label(title, systemImage: "checkmark") : Label(title, systemImage: "")
     }
+}
 
-    private func chooseFolder() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.canCreateDirectories = true
-        panel.prompt = "Choose"
-        if panel.runModal() == .OK, let url = panel.url {
-            state.prefs.saveDirectory = url.path
-        }
+@MainActor
+func chooseSaveFolder(_ state: AppState) {
+    let panel = NSOpenPanel()
+    panel.canChooseDirectories = true
+    panel.canChooseFiles = false
+    panel.canCreateDirectories = true
+    panel.prompt = "Choose"
+    NSApp.activate()
+    if panel.runModal() == .OK, let url = panel.url {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let path = url.path.hasPrefix(home) ? "~" + url.path.dropFirst(home.count) : url.path
+        state.set("save-directory", "\"\(path)\"")
     }
 }
 
-private struct IconToggle: View {
+struct IconToggle: View {
     let symbol: String
     let help: String
     let isOn: Bool

@@ -16,6 +16,15 @@ public enum CaptureAction: String, CaseIterable, Codable, Sendable {
     case screenshot, record
 }
 
+public enum VideoFormat: String, CaseIterable, Codable, Sendable {
+    case mp4, mov
+}
+
+public enum VideoCodec: String, CaseIterable, Codable, Sendable {
+    /// H.264 up to 4096 px (its hardware encoder limit), HEVC above.
+    case auto, h264, hevc
+}
+
 public struct CursorOptions: Codable, Equatable, Sendable {
     public var show = true
 
@@ -29,6 +38,8 @@ public struct CaptureOptions: Codable, Equatable, Sendable {
     public var microphoneID: String?
     public var cursor = CursorOptions()
     public var fps = 60
+    public var format: VideoFormat = .mp4
+    public var codec: VideoCodec = .auto
 
     public init() {}
 }

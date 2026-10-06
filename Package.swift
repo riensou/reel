@@ -11,6 +11,7 @@ let package = Package(
     targets: [
         .target(name: "ReelCore"),
         .executableTarget(name: "reel", dependencies: ["ReelCore"]),
+        .testTarget(name: "ReelCoreTests", dependencies: ["ReelCore"]),
     ],
     swiftLanguageModes: [.v5]
 )

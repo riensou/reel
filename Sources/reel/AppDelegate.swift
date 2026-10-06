@@ -1,17 +1,25 @@
 import AppKit
-import Carbon.HIToolbox
 import Combine
 import ReelCore
+import ServiceManagement
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let state = AppState()
-    private let recorder = Recorder()
     private let thumbnails = ThumbnailController()
+    private lazy var webcam = WebcamBubble(state: state)
+    private lazy var settings = SettingsWindowController(state: state, actions: .init(
+        openConfig: { [weak self] in self?.openConfigFile() },
+        revealConfig: { [weak self] in self?.revealConfigFile() }
+    ))
     private var toolbar: ToolbarPanel?
+    private var recording: RecordingSession?
     private var statusItem: NSStatusItem!
     private var hotKey: HotKey?
+    private var registeredHotKey: KeyCombo?
     private var tick: Timer?
+    private var subscriptions: Set<AnyCancellable> = []
+    private var lastConfig: Config?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -20,28 +28,89 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
         updateStatusItem()
 
-        // ⌘⇧6: open the toolbar, or stop the current recording.
-        hotKey = HotKey(keyCode: kVK_ANSI_6, modifiers: cmdKey | shiftKey) { [weak self] in
-            MainActor.assumeIsolated { self?.hotKeyPressed() }
+        lastConfig = state.config
+        registerHotKey()
+        state.configFile.watch { [weak self] in
+            MainActor.assumeIsolated { self?.state.reloadConfig() }
         }
+        state.$config.removeDuplicates().dropFirst().sink { [weak self] new in
+            self?.configChanged(new)
+        }.store(in: &subscriptions)
+        state.$configWarnings.removeDuplicates().sink { [weak self] warnings in
+            guard let first = warnings.first else { return }
+            let more = warnings.count > 1 ? " (+\(warnings.count - 1) more)" : ""
+            Toast.error("Config \(first)\(more)", action: Toast.Action(title: "Edit") { self?.openConfigFile() })
+        }.store(in: &subscriptions)
+        Publishers.CombineLatest(state.$isRecording, state.$isPaused).sink { [weak self] _ in
+            DispatchQueue.main.async { self?.updateStatusItem() }
+        }.store(in: &subscriptions)
 
-        recorder.onUnexpectedStop = { [weak self] error in
-            DispatchQueue.main.async {
-                self?.recordingEnded()
-                self?.showError(error)
-            }
-        }
-
+        syncLaunchAtLogin()
         if !CGPreflightScreenCaptureAccess() {
             CGRequestScreenCaptureAccess()
         }
+
+        // Dev conveniences: open a surface on launch (`--show-settings demo`, `--show-toolbar`).
+        let args = CommandLine.arguments
+        if let i = args.firstIndex(of: "--show-settings") {
+            let tab = args.indices.contains(i + 1) ? SettingsTab(rawValue: args[i + 1]) : nil
+            settings.show(tab: tab ?? .general)
+        }
+        if args.contains("--show-toolbar") { showToolbar() }
+    }
+
+    // MARK: Config
+
+    private func configChanged(_ config: Config) {
+        if config.hotkey != registeredHotKey { registerHotKey() }
+        if config.launchAtLogin != lastConfig?.launchAtLogin { syncLaunchAtLogin() }
+        if let last = lastConfig, last.webcamSize != config.webcamSize || last.webcamShape != config.webcamShape {
+            webcam.refresh()
+        }
+        if !config.webcam, recording == nil { webcam.hide() }
+        lastConfig = config
+    }
+
+    /// Opens the toolbar, or stops the current recording.
+    private func registerHotKey() {
+        let combo = state.config.hotkey
+        hotKey = nil
+        hotKey = HotKey(keyCode: combo.keyCode, modifiers: combo.carbonModifiers) { [weak self] in
+            MainActor.assumeIsolated { self?.hotKeyPressed() }
+        }
+        registeredHotKey = combo
+    }
+
+    private func syncLaunchAtLogin() {
+        let service = SMAppService.mainApp
+        let want = state.config.launchAtLogin
+        guard want != (service.status == .enabled) else { return }
+        do {
+            if want { try service.register() } else { try service.unregister() }
+        } catch {
+            Toast.error("Couldn't \(want ? "enable" : "disable") launch at login: \(error.localizedDescription)")
+        }
+    }
+
+    func openConfigFile() {
+        let url = state.configFile.url
+        // Prefer the user's text editor over whatever claims extensionless files.
+        if let editor = NSWorkspace.shared.urlForApplication(toOpen: URL(fileURLWithPath: "/tmp/reel.txt")) {
+            NSWorkspace.shared.open([url], withApplicationAt: editor, configuration: NSWorkspace.OpenConfiguration())
+        } else {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    func revealConfigFile() {
+        NSWorkspace.shared.activateFileViewerSelecting([state.configFile.url])
     }
 
     // MARK: Entry points
 
     private func hotKeyPressed() {
-        if state.isRecording {
-            stopRecording()
+        if let recording {
+            recording.stop()
         } else if toolbar != nil {
             closeToolbar()
         } else {
@@ -50,43 +119,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func statusItemClicked() {
-        if state.isRecording {
-            stopRecording()
+        let event = NSApp.currentEvent
+        let wantsMenu = event?.type == .rightMouseUp || event?.modifierFlags.contains(.option) == true
+        if let recording {
+            if wantsMenu { popUp(recordingMenu()) } else { recording.stop() }
             return
         }
-        statusItem.menu = buildMenu()
+        popUp(buildMenu())
+    }
+
+    private func popUp(_ menu: NSMenu) {
+        statusItem.menu = menu
         statusItem.button?.performClick(nil)
     }
 
     func menuDidClose(_ menu: NSMenu) {
-        // Detach so the next left-click goes back through statusItemClicked.
+        // Detach so the next click goes back through statusItemClicked.
         statusItem.menu = nil
     }
 
     @objc private func showToolbar() {
         closeToolbar()
-        let panel = ToolbarPanel(
-            state: state,
-            onCapture: { [weak self] in self?.captureFromToolbar() },
-            onCancel: { [weak self] in self?.closeToolbar() }
-        )
+        let panel = ToolbarPanel(state: state, actions: .init(
+            capture: { [weak self] in self?.captureFromToolbar() },
+            cancel: { [weak self] in self?.closeToolbar() },
+            openSettings: { [weak self] in self?.openSettings() },
+            webcamChanged: { [weak self] visible in
+                guard let self, self.recording == nil else { return }
+                visible ? self.webcam.show() : self.webcam.hide()
+            }
+        ))
         toolbar = panel
         panel.present(on: NSScreen.underMouse ?? NSScreen.screens[0])
     }
 
-    private func closeToolbar() {
+    /// - Parameter keepWebcam: true when a recording is about to use the bubble.
+    private func closeToolbar(keepWebcam: Bool = false) {
         toolbar?.orderOut(nil)
         toolbar = nil
+        if !keepWebcam, recording == nil { webcam.hide() }
     }
 
     private func captureFromToolbar() {
-        closeToolbar()
-        run(mode: state.prefs.mode, action: state.prefs.action)
+        let recordingWithWebcam = state.session.action == .record && state.config.webcam && state.session.webcamOn
+        closeToolbar(keepWebcam: recordingWithWebcam)
+        run(mode: state.session.mode, action: state.session.action)
     }
 
     @objc private func menuAction(_ sender: NSMenuItem) {
         guard let (mode, action) = sender.representedObject as? (CaptureMode, CaptureAction) else { return }
         run(mode: mode, action: action)
+    }
+
+    @objc func openSettings() {
+        closeToolbar()
+        settings.show()
     }
 
     // MARK: Capture
@@ -95,11 +182,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Task {
             let target: CaptureTarget?
             switch mode {
-            case .screen: target = .display((NSScreen.underMouse ?? NSScreen.screens[0]).displayID)
-            case .region: target = await SelectionOverlay().select(.region)
-            case .window: target = await SelectionOverlay().select(.window)
+            case .screen:
+                target = .display((NSScreen.underMouse ?? NSScreen.screens[0]).displayID)
+            case .region:
+                target = await SelectionOverlay().select(
+                    .region, remembered: state.session.lastRegions,
+                    actionTitle: action == .record ? "Record" : "Capture"
+                )
+                if case .region(let id, let rect)? = target {
+                    state.session.lastRegions[id.stableUUID] = rect
+                }
+            case .window:
+                target = await SelectionOverlay().select(.window)
             }
-            guard let target else { return }
+            guard let target else {
+                webcam.hide()
+                return
+            }
             switch action {
             case .screenshot: await screenshot(target)
             case .record: await startRecording(target)
@@ -109,88 +208,86 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func screenshot(_ target: CaptureTarget) async {
         do {
-            let shot = try await Screenshotter.capture(target, options: state.prefs.options)
+            let shot = try await Screenshotter.capture(target, options: state.captureOptions)
             let temp = SaveLocation.temporaryURL(for: .screenshot)
             try Screenshotter.writePNG(shot, to: temp)
             NSSound(named: "Grab")?.play()
-            await deliver(temp, kind: .screenshot)
+            let dir = state.saveDirectory(for: .screenshot)
+            if state.config.thumbnail {
+                await thumbnails.present(tempURL: temp, destination: dir, seconds: state.config.thumbnailDuration)
+            } else {
+                let saved = try SaveLocation.commit(temp, to: dir)
+                Toast.info("Saved \(saved.lastPathComponent)", action: .reveal(saved))
+            }
         } catch {
-            showError(error)
+            Toast.error(error)
         }
     }
 
     private func startRecording(_ target: CaptureTarget) async {
-        let options = state.prefs.options
-        let temp = SaveLocation.temporaryURL(for: .recording)
-        do {
-            try await recorder.start(target, options: options, to: temp)
-        } catch {
-            showError(error)
-            return
+        guard recording == nil else { return }
+        let session = RecordingSession(state: state, target: target, thumbnails: thumbnails, webcam: webcam)
+        session.onEnd = { [weak self] in
+            self?.recording = nil
+            self?.tick?.invalidate()
+            self?.tick = nil
         }
-        state.isRecording = true
-        state.recordingStartedAt = .now
-        tick = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+        recording = session
+        tick = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.updateStatusItem() }
         }
-        updateStatusItem()
-    }
-
-    @objc private func stopRecording() {
-        Task {
-            do {
-                let url = try await recorder.stop()
-                recordingEnded()
-                await deliver(url, kind: .recording)
-            } catch {
-                recordingEnded()
-                showError(error)
-            }
-        }
-    }
-
-    private func recordingEnded() {
-        tick?.invalidate()
-        tick = nil
-        state.isRecording = false
-        state.recordingStartedAt = nil
-        updateStatusItem()
-    }
-
-    private func deliver(_ temp: URL, kind: SaveLocation.Kind) async {
-        let dir = state.saveDirectory(for: kind)
-        if state.prefs.showThumbnail {
-            await thumbnails.present(tempURL: temp, destination: dir, seconds: state.prefs.thumbnailSeconds)
-        } else {
-            do { try SaveLocation.commit(temp, to: dir) } catch { showError(error) }
-        }
+        await session.start()
     }
 
     // MARK: Menu bar
 
     private func updateStatusItem() {
         guard let button = statusItem.button else { return }
-        if state.isRecording, let start = state.recordingStartedAt {
-            let s = Int(Date.now.timeIntervalSince(start))
-            button.image = NSImage(systemSymbolName: "stop.circle.fill", accessibilityDescription: "Stop recording")
-            button.contentTintColor = .systemRed
+        if state.isRecording, let recording {
+            let s = Int(recording.elapsed)
+            let paused = state.isPaused
+            button.image = NSImage(systemSymbolName: paused ? "pause.circle.fill" : "stop.circle.fill",
+                                   accessibilityDescription: paused ? "Paused" : "Stop recording")
+            button.contentTintColor = paused ? .secondaryLabelColor : .systemRed
             button.title = String(format: " %d:%02d", s / 60, s % 60)
             button.imagePosition = .imageLeading
             button.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+            button.toolTip = "Click to stop · Right-click for more"
         } else {
             button.image = NSImage(systemSymbolName: "record.circle", accessibilityDescription: "reel")
             button.contentTintColor = nil
             button.title = ""
             button.imagePosition = .imageOnly
+            button.toolTip = "reel"
         }
     }
+
+    private func recordingMenu() -> NSMenu {
+        let menu = NSMenu()
+        menu.delegate = self
+        let pause = menu.addItem(withTitle: state.isPaused ? "Resume" : "Pause", action: #selector(togglePause), keyEquivalent: "")
+        pause.target = self
+        pause.image = NSImage(systemSymbolName: state.isPaused ? "play.fill" : "pause.fill", accessibilityDescription: nil)
+        let stop = menu.addItem(withTitle: "Stop", action: #selector(stopRecording), keyEquivalent: "")
+        stop.target = self
+        stop.image = NSImage(systemSymbolName: "stop.fill", accessibilityDescription: nil)
+        menu.addItem(.separator())
+        let cancel = menu.addItem(withTitle: "Cancel Recording", action: #selector(cancelRecording), keyEquivalent: "")
+        cancel.target = self
+        cancel.image = NSImage(systemSymbolName: "trash", accessibilityDescription: nil)
+        return menu
+    }
+
+    @objc private func togglePause() { recording?.togglePause() }
+    @objc private func stopRecording() { recording?.stop() }
+    @objc private func cancelRecording() { recording?.cancel() }
 
     private func buildMenu() -> NSMenu {
         let menu = NSMenu()
         menu.delegate = self
-        let toolbarItem = menu.addItem(withTitle: "Capture Toolbar", action: #selector(showToolbar), keyEquivalent: "6")
-        toolbarItem.keyEquivalentModifierMask = [.command, .shift]
+        let toolbarItem = menu.addItem(withTitle: "Capture Toolbar", action: #selector(showToolbar), keyEquivalent: "")
         toolbarItem.target = self
+        toolbarItem.toolTip = state.config.hotkey.symbols
         menu.addItem(.separator())
 
         for (title, mode, action) in [
@@ -207,66 +304,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         menu.addItem(.separator())
-        addToggle(to: menu, "Record System Audio", \.options.systemAudio)
-        addToggle(to: menu, "Record Microphone", \.options.microphone)
-        addToggle(to: menu, "Show Cursor", \.options.cursor.show)
-        addToggle(to: menu, "Floating Thumbnail", \.showThumbnail)
+        menu.addItem(ToggleItem(title: "Record System Audio", path: \.systemAudio, state: state))
+        menu.addItem(ToggleItem(title: "Record Microphone", path: \.microphone, state: state))
+        menu.addItem(ToggleItem(title: "Show Cursor", path: \.showCursor, state: state))
 
         menu.addItem(.separator())
         let folder = state.saveDirectory(for: .screenshot)
-        let open = menu.addItem(withTitle: "Open \(folder.lastPathComponent)", action: #selector(openSaveFolder), keyEquivalent: "")
-        open.target = self
+        menu.addItem(withTitle: "Open \(folder.lastPathComponent)", action: #selector(openSaveFolder), keyEquivalent: "").target = self
+        menu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",").target = self
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit reel", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         return menu
     }
 
-    private func addToggle(to menu: NSMenu, _ title: String, _ path: WritableKeyPath<Preferences, Bool>) {
-        let item = ToggleItem(title: title, path: path, state: state)
-        menu.addItem(item)
-    }
-
     @objc private func openSaveFolder() {
         NSWorkspace.shared.open(state.saveDirectory(for: .screenshot))
     }
-
-    private func showError(_ error: Error) {
-        let alert = NSAlert()
-        alert.messageText = "reel couldn't capture"
-        alert.informativeText = error.localizedDescription
-        if !CGPreflightScreenCaptureAccess() {
-            alert.informativeText += "\n\nreel needs Screen Recording permission in System Settings → Privacy & Security."
-            alert.addButton(withTitle: "Open Settings")
-            alert.addButton(withTitle: "Cancel")
-            NSApp.activate()
-            if alert.runModal() == .alertFirstButtonReturn,
-               let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
-                NSWorkspace.shared.open(url)
-            }
-            return
-        }
-        NSApp.activate()
-        alert.runModal()
-    }
 }
 
-/// Menu item bound to a Bool preference.
+/// Menu item bound to a Bool in the session state.
 private final class ToggleItem: NSMenuItem {
-    private let path: WritableKeyPath<Preferences, Bool>
+    private let path: WritableKeyPath<SessionState, Bool>
     private let appState: AppState
 
     @MainActor
-    init(title: String, path: WritableKeyPath<Preferences, Bool>, state: AppState) {
+    init(title: String, path: WritableKeyPath<SessionState, Bool>, state: AppState) {
         self.path = path
         self.appState = state
         super.init(title: title, action: #selector(toggle), keyEquivalent: "")
         target = self
-        self.state = state.prefs[keyPath: path] ? .on : .off
+        self.state = state.session[keyPath: path] ? .on : .off
     }
 
     required init(coder: NSCoder) { fatalError() }
 
     @objc private func toggle() {
-        MainActor.assumeIsolated { appState.prefs[keyPath: path].toggle() }
+        MainActor.assumeIsolated { appState.session[keyPath: path].toggle() }
     }
 }
