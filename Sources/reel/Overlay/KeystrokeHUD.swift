@@ -59,6 +59,7 @@ final class KeystrokeHUD {
         panel.ignoresMouseEvents = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         panel.contentView = NSHostingView(rootView: KeystrokeView(model: model))
+        Headless.prepare(panel)
         panel.orderFrontRegardless()
         self.panel = panel
 

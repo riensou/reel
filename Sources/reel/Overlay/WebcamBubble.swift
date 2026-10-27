@@ -53,6 +53,7 @@ final class WebcamBubble {
         panel.onMenu = { [weak self] event in self?.showMenu(event) }
         self.panel = panel
         panel.setFrameOrigin(restingOrigin(for: panel.frame.size))
+        Headless.prepare(panel)
         panel.alphaValue = 0
         panel.orderFrontRegardless()
         // (Explicit completion handler: inside async code the trailing-closure
@@ -172,7 +173,7 @@ private final class BubblePanel: NSPanel {
         isOpaque = false
         backgroundColor = .clear
         hasShadow = true
-        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        collectionBehavior = .reelFloating
 
         let view = BubbleView(frame: NSRect(origin: .zero, size: size))
         view.wantsLayer = true

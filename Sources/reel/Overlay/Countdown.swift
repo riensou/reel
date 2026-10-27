@@ -20,8 +20,8 @@ final class Countdown {
             panel.contentView = NSHostingView(rootView: CountdownView(model: model) { [weak self] in self?.finish(true) })
             self.panel = panel
             panel.alphaValue = 0
-            NSApp.activate()
-            panel.makeKeyAndOrderFront(nil)
+            Headless.activate()
+            Headless.makeKeyAndOrderFront(panel)
             NSAnimationContext.runAnimationGroup { $0.duration = 0.15; panel.animator().alphaValue = 1 }
 
             Task { [weak self] in
@@ -83,7 +83,8 @@ final class KeyPanel: NSPanel {
         isOpaque = false
         backgroundColor = .clear
         hasShadow = false
-        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        collectionBehavior = .reelFloating
+        Headless.prepare(self)
     }
 
     override var canBecomeKey: Bool { true }

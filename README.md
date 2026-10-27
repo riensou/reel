@@ -150,9 +150,15 @@ swift test        # unit tests
 scripts/run.sh    # build a debug copy into build.noindex/ and launch it
 
 # Debug builds also have an end-to-end check of the interactive flows
-# (region picker, countdown, border, pause, cancel, recovery, trim):
+# (region picker, countdown, border, pause, cancel, recovery, trim). It runs
+# headless — reel's windows stay behind the desktop and it never takes focus —
+# so you can keep working; add --watch to see it:
 build.noindex/reel.app/Contents/MacOS/reel --self-test /tmp/reel-selftest
 ```
+
+If every build asks for your keychain password ("codesign wants to access
+key…"), run `scripts/make-dev-cert.sh` again: it gives Apple's signing tools
+standing access to the `reel-dev` key, asking for your login password once.
 
 ## License
 

@@ -42,6 +42,7 @@ final class RecordingBorder {
         self.panel = panel
         self.shape = shape
         place(around: rect)
+        Headless.prepare(panel)
         panel.alphaValue = 0
         panel.orderFrontRegardless()
         NSAnimationContext.runAnimationGroup { $0.duration = 0.2; panel.animator().alphaValue = 1 }

@@ -13,6 +13,14 @@ enum Design {
     static var animation: Animation { reduceMotion ? .linear(duration: 0.15) : .easeOut(duration: 0.2) }
 }
 
+extension NSWindow.CollectionBehavior {
+    /// Floating reel surfaces: on every Space, over full-screen apps.
+    /// (No public behavior keeps a window on screen *during* the Space-switch
+    /// animation — `.stationary`, `.transient` and high levels were all tried;
+    /// the window rides out with the old Space and pops back on the new one.)
+    static let reelFloating: NSWindow.CollectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+}
+
 extension View {
     /// Floating-surface styling used by the toolbar, toasts, pills and HUDs.
     func reelSurface(radius: CGFloat = Design.panelRadius) -> some View {
@@ -34,9 +42,10 @@ class FloatingPanel<Content: View>: NSPanel {
         isOpaque = false
         backgroundColor = .clear
         hasShadow = true
-        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        collectionBehavior = .reelFloating
         host.sizingOptions = [.intrinsicContentSize]
         contentView = host
+        Headless.prepare(self)
     }
 
     private let canKey: Bool

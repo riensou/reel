@@ -26,13 +26,14 @@ final class ToolbarPanel: NSPanel {
         backgroundColor = .clear
         hasShadow = true
         isMovableByWindowBackground = true
-        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        collectionBehavior = .reelFloating
         let view = ToolbarView(state: state, mic: mic, systemAudio: systemAudio, actions: actions) { [weak self] size in
             self?.resize(to: size)
         }
         let host = NSHostingView(rootView: view)
         host.sizingOptions = [.intrinsicContentSize]
         contentView = host
+        Headless.prepare(self)
     }
 
     override var canBecomeKey: Bool { true }
@@ -52,8 +53,8 @@ final class ToolbarPanel: NSPanel {
         let size = host.fittingSize
         let vf = screen.visibleFrame
         setFrame(NSRect(x: vf.midX - size.width / 2, y: vf.minY + 90, width: size.width, height: size.height), display: true)
-        NSApp.activate()
-        makeKeyAndOrderFront(nil)
+        Headless.activate()
+        Headless.makeKeyAndOrderFront(self)
     }
 
     /// Keeps the bar centered where it is when controls appear or disappear.
@@ -84,7 +85,7 @@ private struct ToolbarView: View {
     private var webcamVisible: Bool { recording && state.config.webcam && state.session.webcamOn }
 
     var body: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 6) {
             IconButton(symbol: "xmark.circle.fill", help: "Close (Esc)", action: actions.cancel)
                 .foregroundStyle(.secondary)
             divider
@@ -124,18 +125,18 @@ private struct ToolbarView: View {
             OptionsMenu(state: state, openSettings: actions.openSettings)
             Button(action: actions.capture) {
                 Text(recording ? "Record" : "Capture")
-                    .font(.system(size: 13, weight: .semibold))
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 5)
+                    .font(.system(size: 15, weight: .semibold))
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 7)
                     .background(Capsule().fill(recording ? Color.red : Color.accentColor))
                     .foregroundStyle(.white)
             }
             .buttonStyle(.plain)
             .keyboardShortcut(.defaultAction)
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
-        .reelSurface()
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .reelSurface(radius: 16)
         .fixedSize()
         .onGeometryChange(for: CGSize.self) { $0.size } action: { onSize($0) }
         .onAppear {
@@ -149,7 +150,7 @@ private struct ToolbarView: View {
     }
 
     private var divider: some View {
-        Divider().frame(height: 22).padding(.horizontal, 3)
+        Divider().frame(height: 28).padding(.horizontal, 5)
     }
 }
 
@@ -186,11 +187,11 @@ private struct OptionsMenu: View {
             Divider()
             Button("Settings…", action: openSettings)
         } label: {
-            Text("Options").font(.system(size: 13))
+            Text("Options").font(.system(size: 15))
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
-        .padding(.horizontal, 6)
+        .padding(.horizontal, 8)
     }
 
     private func check(_ on: Bool, _ title: String) -> some View {
@@ -222,9 +223,9 @@ struct IconToggle: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: 15))
-                .frame(width: 30, height: 26)
-                .background(RoundedRectangle(cornerRadius: 6).fill(isOn ? Color.primary.opacity(0.14) : .clear))
+                .font(.system(size: 19))
+                .frame(width: 38, height: 34)
+                .background(RoundedRectangle(cornerRadius: 8).fill(isOn ? Color.primary.opacity(0.14) : .clear))
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -260,9 +261,9 @@ private struct LevelToggle: View {
                         .animation(.linear(duration: 0.08), value: meter.level)
                 }
             }
-            .font(.system(size: 15))
-            .frame(width: 30, height: 26)
-            .background(RoundedRectangle(cornerRadius: 6).fill(isOn ? Color.primary.opacity(0.14) : .clear))
+            .font(.system(size: 19))
+            .frame(width: 38, height: 34)
+            .background(RoundedRectangle(cornerRadius: 8).fill(isOn ? Color.primary.opacity(0.14) : .clear))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -277,7 +278,7 @@ private struct IconButton: View {
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: symbol).font(.system(size: 15)).frame(width: 24, height: 26)
+            Image(systemName: symbol).font(.system(size: 19)).frame(width: 30, height: 34)
         }
         .buttonStyle(.plain)
         .help(help)

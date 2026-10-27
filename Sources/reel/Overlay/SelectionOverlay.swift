@@ -29,7 +29,10 @@ final class SelectionOverlay {
     /// - Parameters:
     ///   - remembered: last regions keyed by display UUID (display-local points, top-left origin).
     ///   - actionTitle: "Capture" or "Record", shown on the confirm pill.
-    func select(_ kind: Kind, remembered: [String: CGRect] = [:], actionTitle: String = "Capture") async -> CaptureTarget? {
+    ///   - onChange: called whenever the region changes (also before confirming or
+    ///     cancelling), so the shape is remembered even if nothing is captured.
+    func select(_ kind: Kind, remembered: [String: CGRect] = [:], actionTitle: String = "Capture",
+                onChange: ((CaptureTarget) -> Void)? = nil) async -> CaptureTarget? {
         await withCheckedContinuation { cont in
             continuation = cont
             for screen in NSScreen.screens {
@@ -38,15 +41,16 @@ final class SelectionOverlay {
                 let view = OverlayView(kind: kind, screen: screen, initial: initial, actionTitle: actionTitle) { [weak self] target in
                     self?.finish(target)
                 }
+                view.onChange = onChange
                 panel.contentView = view
                 panel.orderFrontRegardless()
                 panels.append(panel)
                 if screen == NSScreen.underMouse {
-                    panel.makeKey()
+                    if !Headless.enabled { panel.makeKey() }
                     panel.makeFirstResponder(view)
                 }
             }
-            NSApp.activate()
+            Headless.activate()
         }
     }
 
@@ -59,7 +63,10 @@ final class SelectionOverlay {
     /// Shows the region selection alongside the toolbar: your last region (or
     /// a centered one) is ready to move or resize, and the toolbar's
     /// Capture/Record button uses it. Enter or double-click captures; Esc cancels.
-    func attach(remembered: [String: CGRect], onConfirm: @escaping () -> Void, onCancel: @escaping () -> Void) {
+    /// - Parameter onChange: called with the new region whenever it changes,
+    ///   so it's remembered even if the toolbar is closed without capturing.
+    func attach(remembered: [String: CGRect], onChange: @escaping (CaptureTarget) -> Void,
+                onConfirm: @escaping () -> Void, onCancel: @escaping () -> Void) {
         let home = NSScreen.underMouse ?? NSScreen.screens[0]
         let regions = remembered
         // No previous selection: start empty and let the user draw one.
@@ -73,6 +80,7 @@ final class SelectionOverlay {
                 target == nil ? onCancel() : onConfirm()
             }
             view.showsPill = false
+            view.onChange = onChange
             view.onEdit = { [weak self, weak view] in
                 // Starting a selection on one display clears it on the others.
                 self?.views.filter { $0 !== view }.forEach { $0.clearSelection() }
@@ -81,12 +89,35 @@ final class SelectionOverlay {
             panel.orderFrontRegardless()
             panels.append(panel)
         }
+        focusOverlayUnderMouse()
+        // A Space switch hands key status to whatever app is on the new Space;
+        // take it back so the selection keeps its cursors and keys.
+        spaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.focusOverlayUnderMouse() }
+        }
+    }
+
+    private var spaceObserver: NSObjectProtocol?
+
+    /// Makes the overlay on the pointer's screen key. The window server only
+    /// shows an app's cursor over a window while the app has key status, so
+    /// without this the arrow shows over the selection.
+    func focusOverlayUnderMouse() {
+        guard !Headless.enabled, let screen = NSScreen.underMouse,
+              let panel = panels.first(where: { ($0.contentView as? OverlayView)?.screen == screen }) else { return }
+        Headless.activate()
+        panel.makeKeyAndOrderFront(nil)
+        if let view = panel.contentView as? OverlayView { panel.makeFirstResponder(view) }
     }
 
     /// The region currently selected in attached mode.
     var currentTarget: CaptureTarget? { views.lazy.compactMap(\.currentRegion).first }
 
     func close() {
+        if let spaceObserver { NSWorkspace.shared.notificationCenter.removeObserver(spaceObserver) }
+        spaceObserver = nil
         panels.forEach { $0.orderOut(nil) }
         panels.removeAll()
     }
@@ -99,8 +130,7 @@ final class SelectionOverlay {
     }
 
     private func finish(_ target: CaptureTarget?) {
-        panels.forEach { $0.orderOut(nil) }
-        panels.removeAll()
+        close()
         continuation?.resume(returning: target)
         continuation = nil
     }
@@ -119,7 +149,8 @@ final class OverlayPanel: NSPanel {
         // see-through selection straight to the window underneath, and you
         // can't grab the selection to move it.
         ignoresMouseEvents = false
-        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        collectionBehavior = .reelFloating
+        Headless.prepare(self)
     }
 
     override var canBecomeKey: Bool { true }
@@ -135,10 +166,12 @@ final class OverlayView: NSView {
     }
     /// Called when the user starts changing the selection.
     var onEdit: (() -> Void)?
+    /// Called when the user has finished changing the selection (mouse up).
+    var onChange: ((CaptureTarget) -> Void)?
 
     // Region state (view coordinates, bottom-left origin).
     private var rect: NSRect?
-    private enum Drag { case new(NSPoint), move(NSPoint, NSRect), resize(Handle, NSRect) }
+    private enum Drag { case new(NSPoint), move(NSPoint, NSRect), resize(Handle, NSPoint, NSRect) }
     private var drag: Drag?
     private let pill: NSHostingView<ConfirmPill>
     private let pillModel: PillModel
@@ -146,7 +179,18 @@ final class OverlayView: NSView {
     // Window state.
     private var hover: (id: CGWindowID, rect: NSRect)?
 
-    private static let handleRadius: CGFloat = 4.5
+    /// The window server only shows our cursor while this panel is key, and a
+    /// Space switch (three-finger swipe) takes key status away — leaving the
+    /// arrow over the selection until the next click. Poll the pointer and
+    /// take key status back as soon as it's over the selection.
+    private var cursorPoll: Timer?
+    private var lastPolled: NSPoint?
+
+    private static let handleRadius: CGFloat = 5
+    /// Resize zones, like ⌘⇧5: a generous square around each corner, a band
+    /// along each edge (both sides of the line). Inside is "move".
+    private static let cornerHit: CGFloat = 18
+    private static let edgeHit: CGFloat = 8
     private static let snap: CGFloat = 8
 
     init(kind: SelectionOverlay.Kind, screen: NSScreen, initial: CGRect?, actionTitle: String,
@@ -170,6 +214,42 @@ final class OverlayView: NSView {
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        cursorPoll?.invalidate()
+        cursorPoll = nil
+        guard window != nil, kind == .region, !Headless.enabled else { return }
+        let timer = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.pollCursor() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        cursorPoll = timer
+    }
+
+    private func pollCursor() {
+        guard let window, drag == nil else { return }
+        let p = NSEvent.mouseLocation
+        guard p != lastPolled, window.frame.contains(p) else { return }
+        lastPolled = p
+        // Not over the toolbar, which floats above us.
+        if NSApp.windows.contains(where: { $0 is ToolbarPanel && $0.isVisible && $0.frame.contains(p) }) { return }
+        let wanted = cursor(at: convert(window.convertPoint(fromScreen: p), from: nil))
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["REEL_TRACE"] != nil {
+            let shown = NSCursor.currentSystem
+            let line = "poll \(p) wanted \(wanted.hotSpot) \(wanted.image.size) shown \(shown?.hotSpot ?? .zero) \(shown?.image.size ?? .zero) active \(NSApp.isActive) key \(window.isKeyWindow)\n"
+            FileHandle.standardError.write(Data(line.utf8))
+        }
+        #endif
+        if !window.isKeyWindow, wanted != .arrow {
+            Headless.activate()
+            window.makeKeyAndOrderFront(nil)
+            window.makeFirstResponder(self)
+            NSCursor.arrow.set()   // AppKit skips a redundant set; make sure ours lands
+        }
+        wanted.set()
+    }
 
     override var acceptsFirstResponder: Bool { true }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
@@ -232,26 +312,46 @@ final class OverlayView: NSView {
 
     // MARK: Mouse
 
+    /// Which part of the selection a point would resize: a corner when it's
+    /// within the corner square (nearest corner wins on a tiny box), otherwise
+    /// an edge when it's within the edge band, anywhere along that edge.
     private func handle(at p: NSPoint) -> Handle? {
         guard let r = rect else { return nil }
-        return Handle.allCases.first { hypot($0.point(in: r).x - p.x, $0.point(in: r).y - p.y) <= 10 }
+        let c = Self.cornerHit, e = Self.edgeHit
+        guard r.insetBy(dx: -e, dy: -e).contains(p) || r.insetBy(dx: -c, dy: -c).contains(p) else { return nil }
+        let corners: [Handle] = [.bottomLeft, .bottomRight, .topLeft, .topRight]
+        let near = corners
+            .map { h -> (Handle, CGFloat, CGFloat) in
+                let q = h.point(in: r)
+                return (h, abs(q.x - p.x), abs(q.y - p.y))
+            }
+            .filter { $0.1 <= c && $0.2 <= c }
+        if let best = near.min(by: { max($0.1, $0.2) < max($1.1, $1.2) }) { return best.0 }
+        let alongX = p.x >= r.minX - e && p.x <= r.maxX + e
+        let alongY = p.y >= r.minY - e && p.y <= r.maxY + e
+        if alongY, abs(p.x - r.minX) <= e { return .left }
+        if alongY, abs(p.x - r.maxX) <= e { return .right }
+        if alongX, abs(p.y - r.minY) <= e { return .bottom }
+        if alongX, abs(p.y - r.maxY) <= e { return .top }
+        return nil
     }
 
-    /// Inside the selection or on its edge (a few points either side of the
-    /// line) grabs it to move; only the dots resize.
+    /// Inside the selection (away from the edges) grabs it to move.
     private func grabsSelection(_ p: NSPoint) -> Bool {
         guard let r = rect else { return false }
-        return r.insetBy(dx: -6, dy: -6).contains(p)
+        return r.contains(p)
     }
 
     /// The cursor for a point: open hand inside the selection (drag to move),
-    /// resize arrows on handles, crosshair elsewhere (drag for a new region).
+    /// resize arrows on handles, the plain arrow elsewhere. Crosshair only
+    /// when there's no selection yet (or while drawing a new one).
     private func cursor(at p: NSPoint) -> NSCursor {
         guard kind == .region else { return .pointingHand }
         if case .move = drag { return .closedHand }
+        if case .new = drag { return .crosshair }
         if let h = handle(at: p) { return h.cursor }
         if grabsSelection(p) { return .openHand }
-        return .crosshair
+        return rect == nil ? .crosshair : .arrow
     }
 
     // AppKit resets the cursor on its own schedule; answering cursorUpdate
@@ -294,7 +394,7 @@ final class OverlayView: NSView {
         case .region:
             onEdit?()
             if let h = handle(at: p), let r = rect {
-                drag = .resize(h, r)
+                drag = .resize(h, p, r)
             } else if let r = rect, grabsSelection(p) {
                 drag = .move(p, r)
                 NSCursor.closedHand.set()
@@ -313,14 +413,18 @@ final class OverlayView: NSView {
         p.y = min(max(p.y, 0), bounds.maxY)
         switch drag {
         case .new(let start):
+            // A click (or a jitter) outside the selection keeps it; only a
+            // real drag replaces it.
+            guard hypot(p.x - start.x, p.y - start.y) >= 4 else { return }
             rect = snapped(NSRect(x: min(start.x, p.x), y: min(start.y, p.y), width: abs(p.x - start.x), height: abs(p.y - start.y)))
         case .move(let start, let orig):
             var r = orig.offsetBy(dx: p.x - start.x, dy: p.y - start.y)
             r.origin.x = min(max(r.minX, 0), bounds.width - r.width)
             r.origin.y = min(max(r.minY, 0), bounds.height - r.height)
             rect = snapped(r, keepSize: true)
-        case .resize(let h, let orig):
-            rect = snapped(h.resize(orig, to: p))
+        case .resize(let h, let start, let orig):
+            // Relative to the grab point, so the edge doesn't jump to the pointer.
+            rect = snapped(h.resize(orig, dx: p.x - start.x, dy: p.y - start.y))
         }
         needsDisplay = true
         layoutPill()
@@ -329,10 +433,12 @@ final class OverlayView: NSView {
     override func mouseUp(with event: NSEvent) {
         guard kind == .region else { return }
         if case .new = drag, let r = rect, r.width < 4 || r.height < 4 { rect = nil }
+        let edited = drag != nil
         drag = nil
         needsDisplay = true
         layoutPill()
         cursor(at: convert(event.locationInWindow, from: nil)).set()
+        if edited, let region = currentRegion { onChange?(region) }
     }
 
     /// Pull edges within 8pt onto the screen edges.
@@ -426,17 +532,17 @@ private enum Handle: CaseIterable {
         }
     }
 
-    func resize(_ r: NSRect, to p: NSPoint) -> NSRect {
+    func resize(_ r: NSRect, dx: CGFloat, dy: CGFloat) -> NSRect {
         var minX = r.minX, minY = r.minY, maxX = r.maxX, maxY = r.maxY
         switch self {
-        case .bottomLeft: minX = p.x; minY = p.y
-        case .bottom: minY = p.y
-        case .bottomRight: maxX = p.x; minY = p.y
-        case .right: maxX = p.x
-        case .topRight: maxX = p.x; maxY = p.y
-        case .top: maxY = p.y
-        case .topLeft: minX = p.x; maxY = p.y
-        case .left: minX = p.x
+        case .bottomLeft: minX += dx; minY += dy
+        case .bottom: minY += dy
+        case .bottomRight: maxX += dx; minY += dy
+        case .right: maxX += dx
+        case .topRight: maxX += dx; maxY += dy
+        case .top: maxY += dy
+        case .topLeft: minX += dx; maxY += dy
+        case .left: minX += dx
         }
         return NSRect(x: min(minX, maxX), y: min(minY, maxY), width: abs(maxX - minX), height: abs(maxY - minY))
     }

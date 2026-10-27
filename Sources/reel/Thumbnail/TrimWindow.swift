@@ -33,8 +33,9 @@ enum TrimWindow {
             window.contentView = view
             window.center()
             open.append(window)
-            NSApp.activate()
-            window.makeKeyAndOrderFront(nil)
+            Headless.prepare(window)
+            Headless.activate()
+            Headless.makeKeyAndOrderFront(window)
 
             var finished = false
             @MainActor func done(_ range: CMTimeRange?) {

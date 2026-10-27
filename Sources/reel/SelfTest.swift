@@ -169,6 +169,28 @@ final class SelfTest {
         }
         check(b == .region(screen.displayID, CGRect(x: 200, y: 150, width: 700, height: 450)), "region: drag handle resizes", "\(String(describing: b))")
 
+        // Anywhere along an edge resizes that edge (not just the dot).
+        let edge = await pick(remembered: r) { view in
+            let start = viewPoint(view, x: r.maxX + 3, yTop: r.minY + 90)   // right edge, off-center, just outside
+            let end = viewPoint(view, x: r.maxX + 63, yTop: r.minY + 120)
+            send(view, event(.leftMouseDown, start, in: view))
+            send(view, event(.leftMouseDragged, end, in: view))
+            send(view, event(.leftMouseUp, end, in: view))
+            view.keyDown(with: key(36, in: view))
+        }
+        check(edge == .region(screen.displayID, CGRect(x: 200, y: 150, width: 660, height: 400)), "region: drag anywhere on an edge resizes it", "\(String(describing: edge))")
+
+        // Corners have a generous zone: a press 12pt inside the corner still resizes.
+        let corner = await pick(remembered: r) { view in
+            let start = viewPoint(view, x: r.minX + 12, yTop: r.minY + 12)
+            let end = viewPoint(view, x: r.minX - 38, yTop: r.minY - 18)
+            send(view, event(.leftMouseDown, start, in: view))
+            send(view, event(.leftMouseDragged, end, in: view))
+            send(view, event(.leftMouseUp, end, in: view))
+            view.keyDown(with: key(36, in: view))
+        }
+        check(corner == .region(screen.displayID, CGRect(x: 150, y: 120, width: 650, height: 430)), "region: generous corner zone resizes", "\(String(describing: corner))")
+
         // Dragging inside moves without resizing.
         let c = await pick(remembered: r) { view in
             let start = viewPoint(view, x: r.midX, yTop: r.midY)
@@ -280,12 +302,22 @@ final class SelfTest {
         app.closeToolbar()
         app.state.session.lastRegions = [screen.displayID.stableUUID: moved]
 
-        // Esc on the overlay closes everything.
+        // Esc on the overlay closes everything — and an edited selection is
+        // still remembered even though nothing was captured.
         app.showToolbar()
         await wait(0.5)
-        if let v = app.regionOverlay?.viewsForTesting.first { v.keyDown(with: key(53, in: v)) }
+        if let v = app.regionOverlay?.viewsForTesting.first(where: { $0.screen == screen }) {
+            let from = viewPoint(v, x: moved.midX, yTop: moved.midY)
+            let to = viewPoint(v, x: moved.midX - 50, yTop: moved.midY + 40)
+            send(v, event(.leftMouseDown, from, in: v))
+            send(v, event(.leftMouseDragged, to, in: v))
+            send(v, event(.leftMouseUp, to, in: v))
+            v.keyDown(with: key(53, in: v))
+        }
         await wait(0.3)
         check(app.toolbar == nil && app.regionOverlay == nil, "toolbar: Esc closes toolbar and selection")
+        check(app.state.session.lastRegions[screen.displayID.stableUUID] == moved.offsetBy(dx: -50, dy: 40),
+              "toolbar: edited selection is remembered after Esc", "\(app.state.session.lastRegions)")
     }
 
     private func windowPicker() async {

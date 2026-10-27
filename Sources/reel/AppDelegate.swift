@@ -1,4 +1,5 @@
 import AppKit
+import Carbon.HIToolbox
 import Combine
 import ReelCore
 import ServiceManagement
@@ -27,6 +28,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Region selection shown alongside the toolbar in Region mode.
     private(set) var regionOverlay: SelectionOverlay?
     private var toolbarModeSubscription: AnyCancellable?
+    /// Esc closes the toolbar from anywhere while it's up (like ⌘⇧5), even if
+    /// focus wandered to another app.
+    private var escapeKey: HotKey?
     private var lastConfig: Config?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -37,7 +41,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         updateStatusItem()
 
         lastConfig = state.config
-        registerHotKey()
+        #if DEBUG
+        // Self-tests and soaks run headless unless you ask to watch, so they
+        // don't take over the screen, the keyboard or the hotkey.
+        let a = CommandLine.arguments
+        Headless.enabled = (a.contains("--self-test") || a.contains("--soak")) && !a.contains("--watch")
+        #endif
+        if !Headless.enabled { registerHotKey() }
         state.configFile.watch { [weak self] in
             MainActor.assumeIsolated { self?.state.reloadConfig() }
         }
@@ -62,14 +72,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         #if DEBUG
-        // Dev conveniences: open a surface on launch (`--show-settings demo`, `--show-toolbar`).
+        // Dev conveniences: open a surface on launch (`--show-settings demo`,
+        // `--show-toolbar [--region]`, `--show-thumbnail <image>`).
         let args = CommandLine.arguments
         if let i = args.firstIndex(of: "--show-settings") {
             let tab = args.indices.contains(i + 1) ? SettingsTab(rawValue: args[i + 1]) : nil
             settings.show(tab: tab ?? .general)
         }
-        if args.contains("--show-toolbar") { showToolbar() }
+        if args.contains("--show-toolbar") {
+            if args.contains("--region") { state.session.mode = .region }
+            showToolbar()
+        }
         if args.contains("--show-webcam") { webcam.show() }
+        if let i = args.firstIndex(of: "--show-thumbnail"), let path = args[safe: i + 1] {
+            Task { await thumbnails.present(tempURL: URL(fileURLWithPath: path), destination: FileManager.default.temporaryDirectory, seconds: 60) }
+        }
         if let i = args.firstIndex(of: "--demo-scene"), let out = args[safe: i + 1] {
             // Stages and records the README demo, then quits.
             Task {
@@ -215,6 +232,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ))
         toolbar = panel
         panel.present(on: NSScreen.underMouse ?? NSScreen.screens[0])
+        if !Headless.enabled {
+            escapeKey = HotKey(keyCode: kVK_Escape, modifiers: 0) { [weak self] in self?.closeToolbar() }
+        }
         // Like ⌘⇧5: in Region mode the selection is on screen with the toolbar.
         toolbarModeSubscription = state.$session.map(\.mode).removeDuplicates().sink { [weak self] _ in
             DispatchQueue.main.async { self?.syncRegionOverlay() }
@@ -226,6 +246,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if wanted, regionOverlay == nil {
             let overlay = SelectionOverlay()
             overlay.attach(remembered: state.session.lastRegions,
+                           onChange: { self.remember($0) },
                            onConfirm: { [weak self] in self?.captureFromToolbar() },
                            onCancel: { [weak self] in self?.closeToolbar() })
             regionOverlay = overlay
@@ -239,6 +260,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// - Parameter keepWebcam: true when a recording is about to use the bubble.
     func closeToolbar(keepWebcam: Bool = false) {
         toolbarModeSubscription = nil
+        escapeKey = nil
         regionOverlay?.close()
         regionOverlay = nil
         toolbar?.orderOut(nil)
@@ -251,11 +273,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let selected = state.session.mode == .region ? regionOverlay?.currentTarget : nil
         closeToolbar(keepWebcam: recordingWithWebcam)
         if let selected {
-            if case .region(let id, let rect) = selected { state.session.lastRegions[id.stableUUID] = rect }
+            remember(selected)
             perform(state.session.action, on: selected)
         } else {
             run(mode: state.session.mode, action: state.session.action)
         }
+    }
+
+    /// Remembers a region as soon as it's drawn, moved or resized, so it comes
+    /// back next time even if the picker was closed without capturing.
+    private func remember(_ target: CaptureTarget) {
+        guard case .region(let id, let rect) = target else { return }
+        // One selection at a time: the newest one wins across displays.
+        state.session.lastRegions = [id.stableUUID: rect]
     }
 
     private func perform(_ action: CaptureAction, on target: CaptureTarget) {
@@ -288,11 +318,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             case .region:
                 target = await SelectionOverlay().select(
                     .region, remembered: state.session.lastRegions,
-                    actionTitle: action == .record ? "Record" : "Capture"
+                    actionTitle: action == .record ? "Record" : "Capture",
+                    onChange: { self.remember($0) }
                 )
-                if case .region(let id, let rect)? = target {
-                    state.session.lastRegions[id.stableUUID] = rect
-                }
+                if let target { remember(target) }
             case .window:
                 target = await SelectionOverlay().select(.window)
             }
@@ -312,7 +341,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let shot = try await Screenshotter.capture(target, options: state.captureOptions)
             let temp = SaveLocation.temporaryURL(for: .screenshot)
             try Screenshotter.writePNG(shot, to: temp)
-            NSSound(named: "Grab")?.play()
+            if !Headless.enabled { NSSound(named: "Grab")?.play() }
             let dir = state.saveDirectory(for: .screenshot)
             if state.config.thumbnail {
                 await thumbnails.present(tempURL: temp, destination: dir, seconds: state.config.thumbnailDuration)

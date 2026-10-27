@@ -87,8 +87,9 @@ final class ThumbnailPanel: NSPanel {
         isOpaque = false
         backgroundColor = .clear
         hasShadow = true
-        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        collectionBehavior = .reelFloating
         contentView = ThumbnailView(image: image, isVideo: isVideo, panel: self)
+        Headless.prepare(self)
     }
 
     func present(on screen: NSScreen) {
